@@ -323,7 +323,7 @@ characters"
    (ecase major-version
      (2 'id3v2.2-tag)
      (3 'id3v2.3-tag)
-     ;;(4 'id3v2.4-tag) ; XXX - todo
+     (4 'id3v2.3-tag) ; XXX - todo
      )))
 
 (defgeneric data-bytes (frame))
@@ -817,6 +817,13 @@ characters"
 ;;; 4.28
 (define-binary-class priv-frame-v2.3 (generic-ufid-frame id3v2.3-frame) ())
 
+;;; V2.4 frames (experimental)
+(define-binary-class aspi-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class equ2-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class rva2-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class seek-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class sign-frame-v2.3 (raw-frame-v2.3) ())
+
 ;;;; Non-standard frames
 
 ;;;; Apple stuff
@@ -938,7 +945,47 @@ characters"
                    (4 'raw-frame-v2.3)))))) ; XXX 2.4?
     found-class))
 
-;;; id3-frames
+;;; Remove unsync scheme
+;;; Replace any FF 00 sequences with FF (ie, drop the 00)
+;;; Returns a sequence of OCTETS
+(defun remove-unsync-scheme (in size)
+  (let* ((last-byte-was-FF)
+         (byte)
+         (octets (flex:with-output-to-sequence (out :element-type 'octet)
+                   (dotimes (i size)
+                     (setf byte (read-byte in))
+                     (if last-byte-was-FF
+                         (if (not (zerop byte))
+                             (write-byte byte out))
+                         (write-byte byte out))
+                     (setf last-byte-was-FF (= byte #xFF))))))
+    octets))
+
+;;; Apply the unsync scheme:
+;;; Convert the following sequences, where X means any nibble
+;;;   FF 00 XX --> FF 00 00 XX
+;;;   FF F0 XX --> FF 00 FE XX
+;;;   FF E0 XX --> FF 00 E0 XX
+;;;
+;;; Returns the actual number of bytes written
+(defun apply-unsync-scheme (buf out)
+  (let ((bytes-written 0)
+        (last-byte-was-ff))
+
+    (loop for b across buf do
+      (when (and last-byte-was-ff (or (zerop b)
+                                      (= (logand b #xf0) #xf0)
+                                      (= (logand b #xf0) #xe0)))
+        (incf bytes-written)
+        (write-byte #x0 out))
+      (incf bytes-written)
+      (write-byte b out)
+      (setf last-byte-was-ff (= b #xff)))
+    bytes-written))
+
+
+
+;;; ID3 frames
 (define-binary-type id3-frames (tag-size flags frame-type)
   (:reader (in)
     (let ((octets)
@@ -948,16 +995,8 @@ characters"
           (progn                    ; simply read in the octets as is
             (setf octets (make-octets tag-size))
             (read-sequence octets in))
-          (let* ((last-byte-was-FF) ; else, need to remove unsync scheme
-                 (byte))
-            (setf octets (flex:with-output-to-sequence (out :element-type 'octet)
-                           (dotimes (i tag-size)
-                             (setf byte (read-byte in))
-                             (if last-byte-was-FF
-                                 (if (not (zerop byte)) ; drop any #x00
-                                     (write-byte byte out))
-                                 (write-byte byte out))
-                             (setf last-byte-was-FF (= byte #xFF)))))))
+          ;; else, read and remove unsync
+          (setf octets (remove-unsync-scheme in tag-size)))
 
       ;; create a FLEX in-memory stream of the frame area and read frames from that.
       ;; this handles the unsync cleanly, plus makes is impossible to have "run-away"
@@ -975,33 +1014,21 @@ characters"
 
   (:writer (out frames)
     ;; Write frames to FLEXI sequence.
-    (let* ((last-byte-was-ff)
-           (buf (flex:with-output-to-sequence (tmp)
-                  (loop with to-write = tag-size
-                        for frame in frames do
+    (let ((buf (flex:with-output-to-sequence (tmp)
+                 (loop with to-write = tag-size
+                       for frame in frames do
                          (write-value frame-type tmp frame)
                          (decf to-write (+ (frame-header-size frame) (size frame)))))))
 
       (if (not (has-unsync-scheme-applied flags))
           (progn
-            (dbg *dbg* 'no-sync-write)
             (write-sequence buf out)
             ;; pad with #x00
             (loop for count from (length buf) upto (1- tag-size) do
               (write-byte #x00 out)))
 
           ;; else, we have to apply unsync scheme before wrting out to file
-          (let ((bytes-written 0))
-            (loop for b across buf do
-              (when (and last-byte-was-ff (or (zerop b)
-                                              (= (logand b #xf0) #xf0)
-                                              (= (logand b #xf0) #xe0)))
-                (incf bytes-written)
-                (write-byte #x0 out))
-              (incf bytes-written)
-              (write-byte b out)
-              (setf last-byte-was-ff (= b #xff)))
-
+          (let ((bytes-written (apply-unsync-scheme buf out)))
             ;; write out padding, if any
             (loop for n from bytes-written  upto (1- tag-size) do
               (write-byte #x00 out)))))))
@@ -1019,10 +1046,16 @@ characters"
        (if (frame-encrypted-p flags) 1 0)
        (if (frame-grouped-p flags) 1 0))))
 
-;;;; ID3V2.3 header
+;;; ID3V2.3/4 header flags
 (defun has-unsync-scheme-applied (flags)             (logbitp 7 flags))
 (defun extended-p                (flags)             (logbitp 6 flags))
+(defun experimental-p            (flags)             (logbitp 5 flags))
+(defun footer-p                  (flags)             (logbitp 4 flags)) ;2.4 only
+
+;;; Extended header flags
 (defun crc-p                     (flags extra-flags) (and (extended-p flags) (logbitp 15 extra-flags)))
+
+;;; Frame flags
 (defun frame-compressed-p        (flags)             (logbitp 7 flags))
 (defun frame-encrypted-p         (flags)             (logbitp 6 flags))
 (defun frame-grouped-p           (flags)             (logbitp 5 flags))
@@ -1037,11 +1070,12 @@ characters"
   (:dispatch (find-frame-class id)))
 
 ;;; ID3V2.3 header
-;;; XXX BUG: extended header must be read AFTER undoing any unsync scheme
+;;; XXX BUG: extended header must be read AFTER removing the unsync scheme.
+;;;          For now, just don't access these fields.
 (define-binary-class id3v2.3-tag (generic-id3-tag)
-  ((extended-header-size (optional :type 'u4 :if (extended-p flags)))
-   (extra-flags          (optional :type 'u2 :if (extended-p flags)))
-   (padding-size         (optional :type 'u4 :if (extended-p flags)))
+  ((extended-header-size (optional :type 'u4 :if (extended-p flags))) ; extended header
+   (extra-flags          (optional :type 'u2 :if (extended-p flags))) ; extended header
+   (padding-size         (optional :type 'u4 :if (extended-p flags))) ; extended header
    (crc                  (optional :type 'u4 :if (crc-p flags extra-flags)))
    (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.3-frame))))
 
@@ -1053,8 +1087,6 @@ characters"
    (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
    (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
   (:dispatch (find-frame-class id)))
-
-;;; XXX v2.4 todo
 
 
 ;;; Check to see if file starts with ID3 or if the old V2.1 tag is at
@@ -1136,35 +1168,3 @@ characters"
   (dolist (ft frame-types)
     (setf (frames id3)
           (remove-if (lambda (x) (typep x ft)) (frames id3)))))
-
-#|
-(defun test-it ()
-  (handler-bind ((unbound-variable
-                   #'(lambda (c) ;argument is condition description
-                       (format t "got condition ~a~%" c)
-                       (dolist (tag '(store-value use-value))
-                        (let ((restart (find-restart tag c)))
-                          (when restart
-                            (format t "Found restart ~a, invoking~%" restart)
-                            (invoke-restart restart 17)))))))
-    (+ (my-symbol-value 'this-symbol-unbound)
-       (my-symbol-value 'pi))))
-
-(defun my-symbol-value (name)
-  (if (boundp name)
-      (symbol-value name)
-      (restart-case (error 'unbound-variable :name name)
-        (use-value (value)
-          :report "Specify a value to use."
-          :interactive (lambda ()
-                         (format t "~&Value to use: ")
-                         (list (eval (read))))
-          value)
-        (store-value (value)
-          :report "Specify a value to use and store."
-          :interactive (lambda ()
-                         (format t "~&Value to use and store: ")
-                         (list (eval (read))))
-          (setf (symbol-value name) value)
-          value))))
-|#

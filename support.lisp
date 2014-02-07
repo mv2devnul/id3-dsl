@@ -1,4 +1,4 @@
-(in-package #:test)
+(in-package #:id3-dsl)
 (defparameter *v22-frame-names*
   '(("BUF" "Recommended buffer size")
     ("CNT" "Play counter")

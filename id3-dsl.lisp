@@ -9,9 +9,6 @@
 ;;; Means that we've hit padding in the tag
 (define-condition in-padding () ())
 
-(define-condition improper-ucs-termination ()
-  ((value :initarg :value :reader value)))
-
 ;;;; ID3 Strings
 ;;; Note: I've thrown away much of the original PCL code here because I wanted
 ;;; 1) provide round-trip consistency on reads/writes (hence, the introduction
@@ -161,19 +158,19 @@ characters"
         ;; for a non-terminated string, or conversely, only use one #x0 to
         ;; terminate a UCS-2 string.
         ;; Propagate up to adjust frame's size and add another #x0
-        (restart-case (error 'improper-ucs-termination :value term)
-          (fix-ucs-termination ()
-            (format t "File:~a, pos = ~:d~%Odd length for UCS string (~a), terminated = ~a~%"
-                    *current-file*
-                    (file-position instream)
-                    octets
-                    term)
-            (if term
-                (progn
-                  (vector-push-extend (1+ end) octets)
-                  (setf (aref octets end) #x0)
-                  (incf end))
-                (decf end)))))
+        (warn-user "File:~a, pos = ~:d~%Odd length for UCS string (~a), terminated = ~a~%"
+                   *current-file*
+                   (file-position instream)
+                   octets
+                   term)
+        ;; if terminated, add another #x0 to the end, else drop the extraneous byte.
+        ;; NB: we will fix up the enclosing frame's side on write via calc-frame-size
+        (if term
+            (progn
+              (vector-push-extend (1+ end) octets)
+              (setf (aref octets end) #x0)
+              (incf end))
+            (decf end)))
 
       (dbg *dbg* 'read-id3-string-making-ns bom term kind octets)
       (setf ns (make-id3-string
@@ -358,19 +355,26 @@ characters"
 ;;; specialize on for the method, the total FIXED-LEN (non-variable length),
 ;;; and finally the variable-length fields in the frame.
 ;;;
-;;; Use this macro after any frame class that has variable length fields.
-;;;(defgeneric get-frame-size (frame))
+;;; Also generated is the CALC-FRAME-SIZE method that can be
+;;; used to ensure the frame size corresponds to the actual contents of the frame.
+;;;
+;;; Use this macro after every frame class.
+(defgeneric calc-frame-size (frame))
+
 (defmacro generate-after-methods (class-name fixed-len &rest slots)
   (let ((methods))
     (dolist (field slots)
       (push `(defmethod (setf ,field) :after (new-val (frame ,class-name))
                (declare (ignore new-val))
-               (with-slots (size ,@slots) frame
-                 (setf size (+ ,fixed-len (loop for s in (list ,@slots)
-                                                summing (get-length s) into total
-                                                finally (return total))))
-                 (dbg *dbg* 'in-after-method ,field size)))
+               (with-slots (size) frame
+                 (setf size (calc-frame-size frame))))
             methods))
+    (push `(defmethod calc-frame-size ((frame ,class-name))
+             (with-slots (size ,@slots) frame
+               (+ ,fixed-len (loop for s in (list ,@slots)
+                                   summing (get-length s) into total
+                                   finally (return total)))))
+          methods)
     (push 'progn methods)
     methods))
 
@@ -472,6 +476,7 @@ characters"
   ((buffer-size         u3)
    (embedded-info-flags u1)
    (offset-to-next-tag  u4)))
+(generate-after-methods generic-buf-frame 8)
 
 (define-binary-class generic-link-frame ()
   ((link-url           (iso-8859-1))
@@ -960,20 +965,13 @@ characters"
       (setf in-stream (flex:make-in-memory-input-stream octets)
             size (length octets))
 
-      (handler-bind ((improper-ucs-termination
-                       #'(lambda (c)
-                           (format t "Need to adjust tag size by ~d~%" (if (value c) 1 -1))
-                           (let ((restart (find-restart 'fix-ucs-termination)))
-                             (assert restart)
-                             (format t "Invoking restart~%")
-                             (invoke-restart restart)))))
         (loop with to-read = size
               while (plusp to-read)
               for frame = (read-frame frame-type in-stream)
               while frame do
                 (decf to-read (+ (frame-header-size frame) (size frame)))
               collect frame
-              finally (loop repeat (1- to-read) do (read-byte in-stream))))))
+              finally (loop repeat (1- to-read) do (read-byte in-stream)))))
 
   (:writer (out frames)
     ;; Write frames to FLEXI sequence.
@@ -1064,9 +1062,12 @@ characters"
 (defun id3-p (file)
   (with-open-file (in file :element-type 'octet)
     (or (str= "ID3" (read-value 'iso-8859-1 in :length 3))
-        (progn
-          (file-position in (- (file-length in) 128))
-          (str= "TAG" (read-value 'iso-8859-1 in :length 3))))))
+        (let ((len (file-length in)))
+          (if (> len 128)
+              (progn
+                (file-position in (- (file-length in) 128))
+                (str= "TAG" (read-value 'iso-8859-1 in :length 3)))
+              nil)))))
 
 ;;; Check to see if FILE is an MP3 file (or more precisely,
 ;;; if it already has any ID3 tags in it). If so, return
@@ -1075,20 +1076,28 @@ characters"
   (let ((*current-file* file)
         (tag1)
         (tag2))
+
     (if (id3-p file)
         (with-open-file (in file :element-type 'octet)
           (setf tag1 (read-value 'generic-id3-tag in))
-          (file-position in (- (file-length in) 128))
-          (let ((tst (read-value 'id3-v2.1-tag in)))
-            (if (str= (tag tst) "TAG")
-                (setf tag2 tst)))))
+          (let ((len (file-length in))
+                (tst))
+            (when (> len 128)
+              (file-position in (- len 128))
+              (setf tst (read-value 'id3-v2.1-tag in))
+              (if (str= (tag tst) "TAG")
+                  (setf tag2 tst))))))
     (values tag1 tag2)))
 
 ;;; Write out newer (v2.[234]) tag and v2.1 tag
+;;; Remember: we might have read in "broken" frames, so we need to recalculate
+;;; the each frame's size on write (see READ-ID3-STRING)
 (defun write-id3 (file id3 &optional v2.1-tag)
-  (let ((new-tag-size (+ 10 (loop for frame in (frames id3)
-                                  summing (+ (size frame) (frame-header-size frame)) into total
-                                  finally (return total)))))
+  (let ((new-tag-size 10)) ; the ID3 tag header size
+    (loop for frame in (frames id3) do
+      (setf (size frame) (calc-frame-size frame)) ; make sure we have correct frames sizes
+      (incf new-tag-size (+ (size frame) (frame-header-size frame))))
+
     (dbg *dbg* new-tag-size (size id3))
     (when (> new-tag-size (size id3))
         (error "Need to implement growing tag logic"))
@@ -1096,7 +1105,7 @@ characters"
     (with-open-file (out file :element-type 'octet :direction :output :if-does-not-exist :create :if-exists :overwrite)
       (write-value (type-of id3) out id3)
 
-      (when v2.1-tag
+      (when v2.1-tag ; XXX we need to handle ADDING a v2.1 (we're just assuming replacement here)
         (file-position out (- (file-position out 128)))
         (write-value 'id3-v2.1-tag v2.1-tag out)))))
 

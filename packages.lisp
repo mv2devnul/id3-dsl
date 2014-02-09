@@ -27,7 +27,8 @@
   (:use #:common-lisp))
 
 (defpackage #:id3-dsl
-  (:use #:common-lisp 
-  	#:utils 
-	#:com.gigamonkeys.binary-data
-        #:com.gigamonkeys.binary-data.common-datatypes))
+  (:use #:common-lisp
+    #:utils
+    #:zlib
+    #:com.gigamonkeys.binary-data
+    #:com.gigamonkeys.binary-data.common-datatypes))

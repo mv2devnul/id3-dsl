@@ -273,3 +273,13 @@
 (defun get-frame-db-entry (id)
   "Given a frame id/name, return the associated FRAME-DB-ENTRY"
   (gethash id *frame-db*))
+
+(defun whats-the-diff? ()
+  (format t "Frames defined in 2.3, but not 2.4:~%")
+  (maphash (lambda (k v)
+             (if (and (frame-db-entry-is-v23 v) (not (frame-db-entry-is-v24 v)))
+                 (format t "  ~a~%" k))) *frame-db*)
+  (format t "Frames defined in 2.4, but not 2.3:~%")
+  (maphash (lambda (k v)
+             (if (and (frame-db-entry-is-v24 v) (not (frame-db-entry-is-v23 v)))
+                 (format t "  ~a~%" k))) *frame-db*))

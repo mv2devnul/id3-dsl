@@ -1,6 +1,10 @@
 (in-package #:id3-dsl)
 
 (defparameter *dbg* nil)
+(defmacro debug (&body body)
+  `(if *dbg* (dbg ,@body)))
+
+
 (defparameter *current-file* nil)
 
 ;;;; Generic methods/functions/etc used by all kinds of ID3 tags/frames/etc
@@ -122,7 +126,7 @@ characters"
          (bom)
          (ns))
 
-    (dbg *dbg* 'read-id3-string-entry kind length (file-position instream))
+    (debug 'read-id3-string-entry kind length (file-position instream))
 
     (when (eq kind 'ucs-2)
       (if length
@@ -172,11 +176,11 @@ characters"
               (incf end))
             (decf end)))
 
-      (dbg *dbg* 'read-id3-string-making-ns bom term kind octets)
+      (debug 'read-id3-string-making-ns bom term kind octets)
       (setf ns (make-id3-string
                 :bom bom :terminate term :kind kind
                 :string (flex:octets-to-string octets :external-format (make-keyword kind) :end end)))
-      (dbg *dbg* 'read-id3-string-returning ns)
+      (debug 'read-id3-string-returning ns)
       ns)))
 
 ;;; And now, the 4 ID3-STRING types
@@ -267,7 +271,7 @@ characters"
 ;;; calculate bytes left to read in the tag metadata
 (defun bytes-left (bytes-read)
   (let ((ret (- (size (current-binary-object)) bytes-read)))
-    ;(dbg *dbg* 'bytes-left ret)
+    ;(debug 'bytes-left ret)
     ret))
 
 ;;; Generic wrapper to read a frame: catches an IN-PADDING condition, terminates
@@ -291,7 +295,7 @@ characters"
                                  'string
                                  (string (code-char first-byte))
                                  (id3-string-string (read-value 'iso-8859-1 in :length (1- length)))))))
-               (dbg *dbg* 'reading-frame-id ns)
+               (debug 'reading-frame-id ns)
                ns)))
   (:writer (out id)
            (write-value 'iso-8859-1 out id :length length)))
@@ -323,7 +327,7 @@ characters"
    (ecase major-version
      (2 'id3v2.2-tag)
      (3 'id3v2.3-tag)
-     (4 'id3v2.3-tag) ; XXX - todo
+     (4 'id3v2.4-tag) ; XXX - todo
      )))
 
 (defgeneric data-bytes (frame))
@@ -513,15 +517,18 @@ characters"
 ;;;; "RAW" frames: just slurp in the frame contents as octets
 (define-binary-class raw-frame-v2.2 (raw-frame id3v2.2-frame) ())
 (define-binary-class raw-frame-v2.3 (raw-frame id3v2.3-frame) ())
+(define-binary-class raw-frame-v2.4 (raw-frame id3v2.4-frame) ())
 
 ;;;; Concrete frames, listed by the number found in the ID3 "specs"
 ;;; 4.1
 (define-binary-class ufi-frame-v2.2 (generic-ufid-frame id3v2.2-frame) ())
 (define-binary-class ufid-frame-v2.3 (generic-ufid-frame id3v2.3-frame) ())
+(define-binary-class ufid-frame-v2.4 (generic-ufid-frame id3v2.4-frame) ())
 
 ;;; 4.2
 (define-binary-class text-info-frame-v2.2 (generic-text-info-frame id3v2.2-frame) ())
 (define-binary-class text-info-frame-v2.3 (generic-text-info-frame id3v2.3-frame) ())
+(define-binary-class text-info-frame-v2.4 (generic-text-info-frame id3v2.4-frame) ())
 
 ;;; Known text-info frames
 (define-binary-class tal-frame-v2.2 (text-info-frame-v2.2) ())
@@ -565,63 +572,99 @@ characters"
 (define-binary-class tcom-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tcon-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tcop-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tdat-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tden-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class tdat-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
 (define-binary-class tdly-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tdor-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tdrc-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tdrl-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tdtg-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tenc-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class text-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tflt-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class time-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tipl-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class time-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
 (define-binary-class tit1-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tit2-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tit3-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tkey-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tlan-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tlen-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tmcl-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tmed-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tmoo-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class toal-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tofn-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class toly-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tope-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tory-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class tory-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
 (define-binary-class town-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpe1-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpe2-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpe3-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpe4-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpos-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tpro-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tpub-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class trck-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class trda-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class trda-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
 (define-binary-class trsn-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class trso-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tsiz-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tsoa-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tsop-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tsot-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class tsiz-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
 (define-binary-class tsrc-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tsse-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tsst-frame-v2.3 (text-info-frame-v2.3) ())
-(define-binary-class tyer-frame-v2.3 (text-info-frame-v2.3) ())
+(define-binary-class tyer-frame-v2.3 (text-info-frame-v2.3) ()) ; v2.3 only
+
+(define-binary-class talb-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tbpm-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tcom-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tcon-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tcop-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tden-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tdly-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tdor-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tdrc-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tdrl-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tdtg-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tenc-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class text-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tflt-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tipl-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tit1-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tit2-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tit3-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tkey-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tlan-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tlen-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tmcl-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tmed-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tmoo-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class toal-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tofn-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class toly-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tope-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class town-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpe1-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpe2-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpe3-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpe4-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpos-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tpro-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tpub-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class trck-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class trsn-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class trso-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tsoa-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tsop-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tsot-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
+(define-binary-class tsrc-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tsse-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tsst-frame-v2.4 (text-info-frame-v2.4) ()) ; v2.4 only
 
 ;;; 4.2.2
 (define-binary-class txx-frame-v2.2 (generic-desc-value-frame id3v2.2-frame) ())
 (define-binary-class txxx-frame-v2.3 (generic-desc-value-frame id3v2.3-frame) ())
+(define-binary-class txxx-frame-v2.4 (generic-desc-value-frame id3v2.4-frame) ())
 
 ;;; 4.3
 (define-binary-class url-link-frame-v2.2 (generic-url-link-frame id3v2.2-frame) ())
 (define-binary-class url-link-frame-v2.3 (generic-url-link-frame id3v2.3-frame) ())
+(define-binary-class url-link-frame-v2.4 (generic-url-link-frame id3v2.4-frame) ())
 
 (define-binary-class wxx-frame-v2.2 (generic-desc-value-frame id3v2.2-frame) ())
 (define-binary-class wxxx-frame-v2.3 (generic-desc-value-frame id3v2.3-frame) ())
+(define-binary-class wxxx-frame-v2.4 (generic-desc-value-frame id3v2.4-frame) ())
 
 (define-binary-class waf-frame-v2.2 (url-link-frame-v2.2) ())
 (define-binary-class war-frame-v2.2 (url-link-frame-v2.2) ())
@@ -639,51 +682,68 @@ characters"
 (define-binary-class wpay-frame-v2.3 (url-link-frame-v2.3) ())
 (define-binary-class wpub-frame-v2.3 (url-link-frame-v2.3) ())
 
+(define-binary-class wcom-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class wcop-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class woaf-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class woar-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class woas-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class wors-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class wpay-frame-v2.4 (url-link-frame-v2.4) ())
+(define-binary-class wpub-frame-v2.4 (url-link-frame-v2.4) ())
+
 ;;; 4.4
 (define-binary-class ipl-frame-v2.2 (generic-desc-value-frame id3v2.2-frame) ())
-(define-binary-class ipls-frame-v2.3 (generic-desc-value-frame id3v2.3-frame) ())
+(define-binary-class ipls-frame-v2.3 (generic-desc-value-frame id3v2.3-frame) ()) ; v2.3 only
 
 ;;; 4.5
 (define-binary-class mci-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class mcdi-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class mcdi-frame-v2.4 (raw-frame-v2.4) ())
 
 ;;; 4.6
 (define-binary-class etc-frame-v2.2 (generic-time-stamp-event-frame id3v2.2-frame) ())
 (define-binary-class etco-frame-v2.3 (generic-time-stamp-event-frame id3v2.3-frame) ())
+(define-binary-class etco-frame-v2.4 (generic-time-stamp-event-frame id3v2.4-frame) ())
 
 ;;; 4.7
 (define-binary-class mll-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class mllt-frame-v2.3 (raw-frame-v2.3) ())
-;; (define-binary-class mll-frame-v2.2 (generic-mpeg-lookup-table-frame id3v2.2-frame) ())
-;; (define-binary-class mllt-frame-v2.3 (generic-mpeg-lookup-table-frame id3v2.3-frame) ())
+(define-binary-class mllt-frame-v2.4 (raw-frame-v2.4) ())
 
 ;;; 4.8
 (define-binary-class stc-frame-v2.2 (generic-synced-tempo-code-frame id3v2.2-frame) ())
 (define-binary-class sytc-frame-v2.3 (generic-synced-tempo-code-frame id3v2.3-frame) ())
+(define-binary-class sytc-frame-v2.4 (generic-synced-tempo-code-frame id3v2.4-frame) ())
 
 ;;; 4.9
 (define-binary-class ult-frame-v2.2 (generic-unsynced-lyrics-frame id3v2.2-frame) ())
 (define-binary-class uslt-frame-v2.3 (generic-unsynced-lyrics-frame id3v2.3-frame) ())
+(define-binary-class uslt-frame-v2.4 (generic-unsynced-lyrics-frame id3v2.4-frame) ())
 
 ;;; 4.10
 (define-binary-class slt-frame-v2.2 (generic-synced-lyrics-frame id3v2.2-frame) ())
 (define-binary-class sylt-frame-v2.3 (generic-synced-lyrics-frame id3v2.3-frame) ())
+(define-binary-class sylt-frame-v2.4 (generic-synced-lyrics-frame id3v2.4-frame) ())
 
 ;;; 4.11
 (define-binary-class com-frame-v2.2 (generic-comment-frame id3v2.2-frame) ())
 (define-binary-class comm-frame-v2.3 (generic-comment-frame id3v2.3-frame) ())
+(define-binary-class comm-frame-v2.4 (generic-comment-frame id3v2.4-frame) ())
 
 ;;; 4.12
 (define-binary-class rva-frame-v2.2 (raw-frame-v2.2) ())
-(define-binary-class rvad-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class rvad-frame-v2.3 (raw-frame-v2.3) ()) ; v2.3 only
+(define-binary-class rvad-frame-v2.4 (raw-frame-v2.4) ()) ; v2.3 only
 
 ;;; 4.13
 (define-binary-class equ-frame-v2.2 (raw-frame-v2.2) ())
-(define-binary-class equa-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class equa-frame-v2.3 (raw-frame-v2.3) ()) ; v2.3 only
+(define-binary-class equa-frame-v2.4 (raw-frame-v2.4) ()) ; v2.3 only
 
 ;;; 4.14
 (define-binary-class rev-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class rvrb-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class rvrb-frame-v2.4 (raw-frame-v2.4) ())
 
 ;;; 4.15
 (define-binary-class pic-frame-v2.2 (id3v2.2-frame)
@@ -698,7 +758,7 @@ characters"
                                            (encoded-string-length description)))))))
 (generate-after-methods pic-frame-v2.2 5 description picture-data)
 
-(define-binary-class apic-frame-v2.3 (id3v2.3-frame)
+(define-binary-class generic-apic-frame ()
   ((encoding     u1)
    (mime-type    (iso-8859-1))
    (picture-type u1)
@@ -708,7 +768,10 @@ characters"
                                            (encoded-string-length mime-type)
                                            1 ; picture-type
                                            (encoded-string-length description)))))))
-(generate-after-methods apic-frame-v2.3 2 mime-type description picture-data)
+(generate-after-methods generic-apic-frame 2 mime-type description picture-data)
+
+(define-binary-class apic-frame-v2.3 (generic-apic-frame id3v2.3-frame) ())
+(define-binary-class apic-frame-v2.4 (generic-apic-frame id3v2.4-frame) ())
 
 ;;; 4.16
 (define-binary-class geo-frame-v2.2 (id3v2.2-frame)
@@ -723,7 +786,7 @@ characters"
                                               (encoded-string-length content-description)))))))
 (generate-after-methods geo-frame-v2.2 1 mime-type filename content-description encapsulated-object)
 
-(define-binary-class geob-frame-v2.3 (id3v2.3-frame)
+(define-binary-class generic-geob-frame ()
   ((encoding            u1)
    (mime-type           (iso-8859-1))
    (filename            (id3-encoded-string :encoding encoding))
@@ -733,43 +796,54 @@ characters"
                                               (encoded-string-length mime-type)
                                               (encoded-string-length filename)
                                               (encoded-string-length content-description)))))))
-(generate-after-methods geob-frame-v2.3 1 mime-type filename content-description encapsulated-object)
+(generate-after-methods generic-geob-frame 1 mime-type filename content-description encapsulated-object)
 
+(define-binary-class geob-frame-v2.3 (generic-geob-frame id3v2.3-frame) ())
+(define-binary-class geob-frame-v2.4 (generic-geob-frame id3v2.4-frame) ())
 
 ;;; 4.17
 (define-binary-class cnt-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class pcnt-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class pcnt-frame-v2.4 (raw-frame-v2.4) ())
 
 ;;; 4.18
 (define-binary-class pop-frame-v2.2 (generic-pop-frame id3v2.2-frame) ())
 (define-binary-class popm-frame-v2.3 (generic-pop-frame id3v2.3-frame) ())
+(define-binary-class popm-frame-v2.4 (generic-pop-frame id3v2.4-frame) ())
 
 ;;; 4.19
 (define-binary-class buf-frame-v2.2 (generic-buf-frame id3v2.2-frame) ())
 (define-binary-class rbuf-frame-v2.3 (generic-buf-frame id3v2.3-frame) ())
+(define-binary-class rbuf-frame-v2.4 (generic-buf-frame id3v2.4-frame) ())
 
 ;;; 4.20
 (define-binary-class crm-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class aenc-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class aenc-frame-v2.4 (raw-frame-v2.4) ())
 
 ;;; 4.21 NB v2.2/v2.3 diverge here
 (define-binary-class cra-frame-v2.2 (raw-frame-v2.2) ())
-(define-binary-class link-frame-v2.3 (generic-link-frame id3v2.3-frame) ())
 
 ;;; 4.22
 (define-binary-class lnk-frame-v2.2 (generic-link-frame id3v2.2-frame) ())
+(define-binary-class link-frame-v2.3 (generic-link-frame id3v2.3-frame) ())
+(define-binary-class link-frame-v2.4 (generic-link-frame id3v2.4-frame) ())
 
 ;;; 4.22 (from here on out only 2.3/2.4 frames)
-(define-binary-class poss-frame-v2.3 (id3v.2.3-frame)
+(define-binary-class generic-poss-frame ()
   ((time-stamp-format u1)
    (ts-position       (raw-bytes :size (bytes-left 1)))))
-(generate-after-methods poss-frame-v2.3 1 ts-position)
+(generate-after-methods generic-poss-frame 1 ts-position)
+
+(define-binary-class poss-frame-v2.3 (generic-poss-frame id3v.2.3-frame) ())
+(define-binary-class poss-frame-v2.4 (generic-poss-frame id3v.2.4-frame) ())
 
 ;;; 4.23
 (define-binary-class user-frame-v2.3 (generic-comment-frame id3v2.3-frame) ())
+(define-binary-class user-frame-v2.4 (generic-comment-frame id3v2.4-frame) ())
 
 ;;; 4.24
-(define-binary-class owne-frame-v2.3 (id3v2.3-frame)
+(define-binary-class generic-owne-frame ()
  ((encoding          u1)
    (price-payed      (iso-8859-1))
    (date-of-purchase (iso-8859-1 :length 8))
@@ -778,10 +852,13 @@ characters"
                       :length (bytes-left (+ 1
                                              (encoded-string-length price-payed)
                                              (encoded-string-length date-of-purchase)))))))
-(generate-after-methods owne-frame-v2.3 9 price-payed seller)
+(generate-after-methods generic-owne-frame 9 price-payed seller)
+
+(define-binary-class owne-frame-v2.3 (generic-owne-frame id3v2.3-frame) ())
+(define-binary-class owne-frame-v2.4 (generic-owne-frame id3v2.4-frame) ())
 
 ;;; 4.25
-(define-binary-class comr-frame-v2.3 (id3v2.3-frame)
+(define-binary-class generic-comr-frame ()
   ((encoding          u1)
    (price-string      (iso-8859-1))
    (valid-until       (iso-8869-1 :length 8))
@@ -798,7 +875,10 @@ characters"
                                           (encoded-string-length name-of-seller)
                                           (encoded-string-length description)
                                           (encoded-string-length picture-mime-type))))))
-(generate-after-methods comr-frame-v2.3 10 price-string contact-url name-of-seller description picture-mime-type seller-logo)
+(generate-after-methods generic-comr-frame 10 price-string contact-url name-of-seller description picture-mime-type seller-logo)
+
+(define-binary-class comr-frame-v2.3 (generic-comr-frame id3v2.3-frame) ())
+(define-binary-class comr-frame-v2.4 (generic-comr-frame id3v2.4-frame) ())
 
 (define-binary-class generic-registration-data-frame ()
   ((owner-identifier (iso-8859-1))
@@ -810,19 +890,22 @@ characters"
 
 ;;; 4.26
 (define-binary-class encr-frame-v2.3 (generic-registration-data-frame id3v2.3-frame) ())
+(define-binary-class encr-frame-v2.4 (generic-registration-data-frame id3v2.4-frame) ())
 
 ;;; 4.27
 (define-binary-class grid-frame-v2.3 (generic-registration-data-frame id3v2.3-frame) ())
+(define-binary-class grid-frame-v2.4 (generic-registration-data-frame id3v2.4-frame) ())
 
 ;;; 4.28
 (define-binary-class priv-frame-v2.3 (generic-ufid-frame id3v2.3-frame) ())
+(define-binary-class priv-frame-v2.4 (generic-ufid-frame id3v2.4-frame) ())
 
-;;; V2.4 frames (experimental)
-(define-binary-class aspi-frame-v2.3 (raw-frame-v2.3) ())
-(define-binary-class equ2-frame-v2.3 (raw-frame-v2.3) ())
-(define-binary-class rva2-frame-v2.3 (raw-frame-v2.3) ())
-(define-binary-class seek-frame-v2.3 (raw-frame-v2.3) ())
-(define-binary-class sign-frame-v2.3 (raw-frame-v2.3) ())
+;;; V2.4 frames
+(define-binary-class aspi-frame-v2.4 (raw-frame-v2.4) ()) ; v2.4 only
+(define-binary-class equ2-frame-v2.4 (raw-frame-v2.4) ()) ; v2.4 only
+(define-binary-class rva2-frame-v2.4 (raw-frame-v2.4) ()) ; v2.4 only
+(define-binary-class seek-frame-v2.4 (raw-frame-v2.4) ()) ; v2.4 only
+(define-binary-class sign-frame-v2.4 (raw-frame-v2.4) ()) ; v2.4 only
 
 ;;;; Non-standard frames
 
@@ -833,16 +916,17 @@ characters"
 ;;; case of a Text Info frame, but as near as I can tell, Apple puts an
 ;;; invalid UCS-2 string (ie, they use 01 ff fe fe, where 1 is the
 ;;; encoding, fffe is the BOM). Upshot is that we have to define a special
-;;; class.  Sigh.
+;;; class.
+;;; In other words, I have seen this frame encoded as
+;;;     ((encoding u1)
+;;;      (bom      u2)
+;;;      (payload  u1)))
+;;; On the other hand, I've seen it defined other ways too, so
+;;; for now, just slurp it in raw.
 (define-binary-class tcp-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class tcmp-frame-v2.3 (raw-frame-v2.3) ())
+(define-binary-class tcmp-frame-v2.4 (raw-frame-v2.4) ())
 
-;;; NB
-;;; TEMP: I've seen TCMP encoded in two ways:
-;;; as raw-bytes or like this:
-;;; ((encoding u1)
-;;;  (bom u2)
-;;;  (payload u1)))
 
 ;;; Apple's sort "enhancements" for v2.2/v2.3
 ;;; Note: v2.4 adopted these some of these, so we don't redefine them here.
@@ -861,26 +945,29 @@ characters"
 (define-binary-class tso2-frame-v2.3 (text-info-frame-v2.3) ())
 (define-binary-class tsoc-frame-v2.3 (text-info-frame-v2.3) ())
 
+(define-binary-class tso2-frame-v2.4 (text-info-frame-v2.4) ())
+(define-binary-class tsoc-frame-v2.4 (text-info-frame-v2.4) ())
+
 ;;;; Non-Apple
 ;;; Non-standard, replay gain
-(define-binary-class rgad-frame-v2.3 (id3v2.3-frame)
+(define-binary-class generic-rgad-frame ()
   ((peak-amplitude         u4)
    (radio-replay-gain      u2)
    (audiophile-replay-gain u2)))
+(generate-after-methods generic-rgad-frame 8)
 
-;;; Non-standard, Music Match fluff
+(define-binary-class rgad-frame-v2.3 (generic-rgad-frame id3v2.3-frame) ())
+(define-binary-class rgad-frame-v2.4 (generic-rgad-frame id3v2.4-frame) ())
+
+;;; Non-standard, Music Match fluff. V2.3 only???
 (define-binary-class ncon-frame-v2.3 (raw-frame-v2.3) ())
-
-;;; Non-standard
 (define-binary-class xdor-frame-v2.3 (generic-text-info-frame id3v2.3-frame) ())
 
 ;;;; Finding frame classes
 (defun possibly-valid-frame-id? (frame-id)
   "Test to see if a string is a potentially valid frame id"
 
-  ;; test each octet to see if it is alphanumeric. NB: this should probably
-  ;; be rewritten to be "if FRAME-ID starts with a T, W, X, Y, Z, and is followed
-  ;; only by (upper-case) alphanumerics...
+  ;; test each octet to see if it is alphanumeric and if a character, its is upper-case
   (loop for c across frame-id do
     (when (not (and (alphanumericp c)
                     (if (alpha-char-p c)
@@ -890,10 +977,11 @@ characters"
   t)
 
 ;;; Create a frame-class name string.
-(defun mk-frame-class-name (id)
-  (string-upcase (concatenate 'string id (ecase (length id)
-                                           (3 "-frame-v2.2")
-                                           (4 "-frame-v2.3"))))) ; XXX 2.4???
+(defun mk-frame-class-name (id version)
+  (string-upcase (concatenate 'string id (ecase version
+                                           (2 "-frame-v2.2")
+                                           (3 "-frame-v2.3")
+                                           (4 "-frame-v2.4")))))
 
 ;;; To instantiate frames, we take in STR, which is the frame id, create
 ;;; an appropriate frame-class name, and try to find the so-named class
@@ -901,12 +989,12 @@ characters"
 ;;; assume that any class starting with T or W are TEXT-INFO/URL-LINK
 ;;; frames, and failing that, if the class name is possibly valid,
 ;;; we just return a RAW class.
-(defun find-frame-class (str)
+(defun find-frame-class (str version)
   (let* ((name (id3-string-string str))
-         (found-class-symbol (find-symbol (mk-frame-class-name name)))
+         (found-class-symbol (find-symbol (mk-frame-class-name name version)))
          (found-class))
 
-    (dbg *dbg* 'find-frame-class name (mk-frame-class-name name) found-class-symbol)
+    (debug 'find-frame-class name found-class-symbol)
 
     ;; if we found the class name, return the class (to be used for MAKE-INSTANCE)
     (when found-class-symbol
@@ -919,16 +1007,22 @@ characters"
     (setf found-class
           (case (aref name 0)
             (#\T
+             (when (not (possibly-valid-frame-id? name))
+               (error "<~a> is NOT a valid text-info frame name" name))
              (format t "Warning: encountered an unknown text-info frame, ~a~%" name)
-             (ecase (length name)
-               (3 'text-info-frame-v2.2)
-               (4 'text-info-frame-v2.3))) ; XXX 2.4?
-            (#\W
+             (ecase version
+               (2 'text-info-frame-v2.2)
+               (3 'text-info-frame-v2.3)
+               (4 'text-info-frame-v2.4)))
+             (#\W
+             (when (not (possibly-valid-frame-id? name))
+               (error "<~a> is NOT a valid url-link-info frame name" name))
              (format t "Warning: encountered an unknown url-link-info frame, ~a~%" name)
              (ecase (length name)
-               (3 'url-link-frame-v2.2)
-               (4 'url-link-frame-v2.3))) ; XXX 2.4?
-            (t
+               (2 'url-link-frame-v2.2)
+               (3 'url-link-frame-v2.3)
+               (4 'url-link-frame-v2.4)))
+             (t
              ;; we don't recognize the frame name.  if it could
              ;; possibly be a real frame name, then just read
              ;; it raw
@@ -941,9 +1035,10 @@ characters"
                    nil)
                  ;; possibly a frame name, so just read it in raw
                  (ecase (length name)
-                   (3 'raw-frame-v2.2)
-                   (4 'raw-frame-v2.3)))))) ; XXX 2.4?
-    found-class))
+                   (2 'raw-frame-v2.2)
+                   (3 'raw-frame-v2.3)
+                   (4 'raw-frame-v2.4))))))
+          found-class))
 
 ;;; Remove unsync scheme
 ;;; Replace any FF 00 sequences with FF (ie, drop the 00)
@@ -988,10 +1083,12 @@ characters"
 ;;; ID3 frames
 (define-binary-type id3-frames (tag-size flags frame-type)
   (:reader (in)
+    (debug 'id3-frames-reader tag-size flags frame-type)
     (let ((octets)
           (in-stream)
           (size 0))
-      (if (not (has-unsync-scheme-applied flags))
+
+      (if (not (header-unsync-p flags))
           (progn                    ; simply read in the octets as is
             (setf octets (make-octets tag-size))
             (read-sequence octets in))
@@ -1004,13 +1101,14 @@ characters"
       (setf in-stream (flex:make-in-memory-input-stream octets)
             size (length octets))
 
-        (loop with to-read = size
-              while (plusp to-read)
-              for frame = (read-frame frame-type in-stream)
-              while frame do
-                (decf to-read (+ (frame-header-size frame) (size frame)))
-              collect frame
-              finally (loop repeat (1- to-read) do (read-byte in-stream)))))
+      ;; XXX change here to read in v2.4 frames compressed/unsync/encrypted?
+      (loop with to-read = size
+            while (plusp to-read)
+            for frame = (read-frame frame-type in-stream)
+            while frame do
+              (decf to-read (+ (frame-header-size frame) (size frame)))
+            collect frame
+            finally (loop repeat (1- to-read) do (read-byte in-stream)))))
 
   (:writer (out frames)
     ;; Write frames to FLEXI sequence.
@@ -1020,7 +1118,7 @@ characters"
                          (write-value frame-type tmp frame)
                          (decf to-write (+ (frame-header-size frame) (size frame)))))))
 
-      (if (not (has-unsync-scheme-applied flags))
+      (if (not (header-unsync-p flags))
           (progn
             (write-sequence buf out)
             ;; pad with #x00
@@ -1033,8 +1131,70 @@ characters"
             (loop for n from bytes-written  upto (1- tag-size) do
               (write-byte #x00 out)))))))
 
+;;; ID3V2.3/4 header flags
+(defun header-unsync-p       (flags)             (logbitp 7 flags))
+(defun extended-p            (flags)             (logbitp 6 flags))
+(defun header-experimental-p (flags)             (logbitp 5 flags))
+(defun header-footer-p       (flags)             (logbitp 4 flags)) ; v2.4 only
+
+;;; ID3V2.2 header
+(define-binary-class id3v2.2-tag (generic-id3-tag)
+  ((frames (id3-frames :tag-size size :flags flags :frame-type 'id3v2.2-frame))))
+
+;;; Extended header flags: V2.3
+(defun ext-header-crc-p      (flags ext-flags)   (and (extended-p flags) (logbitp 15 ext-flags)))
+
+;;; ID3V2.3 header
+;;; XXX BUG: extended header must be read AFTER removing the unsync scheme.
+;;;          For now, just don't access these fields?
+(define-binary-class id3v2.3-tag (generic-id3-tag)
+  ((extended-header-size (optional :type 'u4 :if (extended-p flags))) ; extended header
+   (ext-flags            (optional :type 'u2 :if (extended-p flags))) ; extended header
+   (padding-size         (optional :type 'u4 :if (extended-p flags))) ; extended header
+   (crc                  (optional :type 'u4 :if (ext-header-crc-p flags ext-flags)))
+   (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.3-frame))))
+
+;;; Extended header flags: V2.4
+(defun v2.4-ext-header-is-update-p    (flags ext-flags) (and (extended-p flags) (logbitp 6 ext-flags)))
+(defun v2.4-ext-header-crc-p          (flags ext-flags) (and (extended-p flags) (logbitp 5 ext-flags)))
+(defun v2.4-ext-header-restrictions-p (flags ext-flags) (and (extended-p flags) (logbitp 4 ext-flags)))
+
+;;; ID3V2.4 header
+(define-binary-class id3v2.4-tag (generic-id3-tag)
+  ((extended-header-size (optional :type 'id3-sync-safe-u32 :if (extended-p flags))) ; extended header
+   (ext-num-bytes        (optional :type 'u1 :if (extended-p flags))) ; extended header
+   (ext-flags            (optional :type 'u1 :if (extended-p flags))) ; extended header
+   (is-update            (optional :type 'u1 :if (and (extended-p flags) (v2.4-ext-header-is-update-p flags ext-flags))))
+   (crc                  (optional :type 'u5 :if (and (extended-p flags) (v2.4-ext-header-crc-p flags ext-flags))))
+   (restrictions         (optional :type 'u1 :if (and (extended-p flags) (v2.4-ext-header-restrictions-p flags ext-flags))))
+   (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.4-frame))))
+
+
+;;; Frame flags for v2.3/4
+;;; NB: v2.2 only really defines bit-7. It does document bit-6 as being the
+;;; compression flag, but then states that if it is set, the software should
+;;; "ignore the entire tag if this (bit-6) is set"
+(defun frame-altertag-p   (flags) (logbitp 15 flags))
+(defun frame-alterfile-p  (flags) (logbitp 14 flags))
+(defun frame-readonly-p   (flags) (logbitp 13 flags))
+(defun frame-compressed-p (flags) (logbitp 7 flags))
+(defun frame-encrypted-p  (flags) (logbitp 6 flags))
+(defun frame-grouped-p    (flags) (logbitp 5 flags))
+
+;;; frame flags are different for 2.4.  Also note, that some flags indicate that additional data
+;;; follows the frame header and these must be read in the order of the flags
+(defun v2.4-frame-altertag-p  (flags) (logbitp 14 flags)) ; no additional data
+(defun v2.4-frame-alterfile-p (flags) (logbitp 13 flags)) ; no additional data
+(defun v2.4-frame-readonly-p  (flags) (logbitp 12 flags)) ; no additional data
+(defun v2.4-frame-groupid-p   (flags) (logbitp 6 flags))  ; one byte added to frame
+(defun v2.4-frame-compress-p  (flags) (logbitp 3 flags))  ; one byte added to frame
+(defun v2.4-frame-encrypt-p   (flags) (logbitp 2 flags))  ; one byte added to frame
+(defun v2.4-frame-unsynch-p   (flags) (logbitp 1 flags))  ; no bytes, but should datalen be set
+(defun v2.4-frame-datalen-p   (flags) (logbitp 0 flags))  ; four bytes added to frame
+
 (defmethod frame-header-size ((frame id3v2.2-frame)) 6)
 (defmethod frame-header-size ((frame id3v2.3-frame)) 10)
+(defmethod frame-header-size ((frame id3v2.4-frame)) 10)
 
 (defmethod data-bytes ((frame id3v2.2-frame))
   (size frame))
@@ -1046,39 +1206,21 @@ characters"
        (if (frame-encrypted-p flags) 1 0)
        (if (frame-grouped-p flags) 1 0))))
 
-;;; ID3V2.3/4 header flags
-(defun has-unsync-scheme-applied (flags)             (logbitp 7 flags))
-(defun extended-p                (flags)             (logbitp 6 flags))
-(defun experimental-p            (flags)             (logbitp 5 flags))
-(defun footer-p                  (flags)             (logbitp 4 flags)) ;2.4 only
+(defmethod data-bytes ((frame id3v2.4-frame))
+  (let ((flags (flags frame)))
+    (- (size frame)
+       (if (v2.4-frame-groupid-p flags) 1 0)
+       (if (v2.4-frame-compress-p flags) 1 0)
+       (if (v2.4-frame-encrypt-p flags) 1 0)
+       (if (v2.4-frame-datalen-p flags) 4 0))))
 
-;;; Extended header flags
-(defun crc-p                     (flags extra-flags) (and (extended-p flags) (logbitp 15 extra-flags)))
-
-;;; Frame flags
-(defun frame-compressed-p        (flags)             (logbitp 7 flags))
-(defun frame-encrypted-p         (flags)             (logbitp 6 flags))
-(defun frame-grouped-p           (flags)             (logbitp 5 flags))
-
-;;;; ID3V2.2 header
-(define-binary-class id3v2.2-tag (generic-id3-tag)
-  ((frames (id3-frames :tag-size size :flags flags :frame-type 'id3v2.2-frame))))
 
 (define-tagged-binary-class id3v2.2-frame ()
   ((id   (frame-id :length 3))
    (size u3))
-  (:dispatch (find-frame-class id)))
+  (:dispatch (find-frame-class id 2)))
 
-;;; ID3V2.3 header
-;;; XXX BUG: extended header must be read AFTER removing the unsync scheme.
-;;;          For now, just don't access these fields.
-(define-binary-class id3v2.3-tag (generic-id3-tag)
-  ((extended-header-size (optional :type 'u4 :if (extended-p flags))) ; extended header
-   (extra-flags          (optional :type 'u2 :if (extended-p flags))) ; extended header
-   (padding-size         (optional :type 'u4 :if (extended-p flags))) ; extended header
-   (crc                  (optional :type 'u4 :if (crc-p flags extra-flags)))
-   (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.3-frame))))
-
+;;; XXX how to handle compression/encryption???
 (define-tagged-binary-class id3v2.3-frame ()
   ((id                (frame-id :length 4))
    (size              u4)
@@ -1086,7 +1228,18 @@ characters"
    (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
    (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
    (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
-  (:dispatch (find-frame-class id)))
+  (:dispatch (find-frame-class id 3)))
+
+;;; XXX how to handle compression/encryption/unsync
+(define-tagged-binary-class id3v2.4-frame ()
+  ((id                (frame-id :length 4))
+   (size              id3-sync-safe-u32)
+   (flags             u2)
+   (group-id-byte     (optional :type 'u1 :if (v2.4-frame-groupid-p flags)))
+   (compress-byte     (optional :type 'u1 :if (v2.4-frame-compress-p flags)))
+   (encrypt-byte      (optional :type 'u1 :if (v2.4-frame-encrypt-p flags)))
+   (data-length       (optional :type 'id3-sync-safe-u32 :if (v2.4-frame-datalen-p flags))))
+  (:dispatch (find-frame-class id 4)))
 
 
 ;;; Check to see if file starts with ID3 or if the old V2.1 tag is at
@@ -1119,6 +1272,7 @@ characters"
               (setf tst (read-value 'id3-v2.1-tag in))
               (if (str= (tag tst) "TAG")
                   (setf tag2 tst))))))
+    ;(when (and tag1 (= 4 (major-version tag1)) (break)))
     (values tag1 tag2)))
 
 ;;; Write out newer (v2.[234]) tag and v2.1 tag
@@ -1130,7 +1284,7 @@ characters"
       (setf (size frame) (calc-frame-size frame)) ; make sure we have correct frames sizes
       (incf new-tag-size (+ (size frame) (frame-header-size frame))))
 
-    (dbg *dbg* new-tag-size (size id3))
+    (debug new-tag-size (size id3))
     (when (> new-tag-size (size id3))
         (error "Need to implement growing tag logic"))
 

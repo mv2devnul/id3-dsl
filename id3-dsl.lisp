@@ -4,6 +4,7 @@
 (defmacro debug (&body body)
   `(if *dbg* (dbg ,@body)))
 
+(defparameter *pedantic* nil "if set, we warn about more things")
 
 (defparameter *current-file* nil)
 
@@ -158,17 +159,18 @@ characters"
       (when (and (or (eq 'ucs-2le kind)
                      (eq 'ucs-2be kind))
                  (oddp end))
+
         ;; I have found some MP3's UCS-2 encoded strings that throw in an extra #x0
         ;; for a non-terminated string, or conversely, only use one #x0 to
         ;; terminate a UCS-2 string.
-        ;; Propagate up to adjust frame's size and add another #x0
-        (warn-user "File:~a, pos = ~:d~%Odd length for UCS string (~a), terminated = ~a~%"
-                   *current-file*
-                   (file-position instream)
-                   octets
-                   term)
+        (when *pedantic*
+          (warn-user "File:~a, pos = ~:d~%Odd length for UCS string (~a), terminated = ~a~%"
+                     *current-file*
+                     (file-position instream)
+                     octets
+                     term))
         ;; if terminated, add another #x0 to the end, else drop the extraneous byte.
-        ;; NB: we will fix up the enclosing frame's side on write via calc-frame-size
+        ;; NB: we will fix up the enclosing frame's size on write via CALC-FRAME-SIZE
         (if term
             (progn
               (vector-push-extend (1+ end) octets)
@@ -177,6 +179,7 @@ characters"
             (decf end)))
 
       (debug 'read-id3-string-making-ns bom term kind octets)
+
       (setf ns (make-id3-string
                 :bom bom :terminate term :kind kind
                 :string (flex:octets-to-string octets :external-format (make-keyword kind) :end end)))
@@ -309,26 +312,6 @@ characters"
 
 ;;; A 32-bit, sync-safe integer. Used primarily for tag/frame sizes
 (define-binary-type id3-sync-safe-u32 () (unsigned-integer :bytes 4 :bits-per-byte 7))
-
-;;; ID3 information is stored as (at position 0 of a file):
-;;; identifier: 3 bytes == "ID3"
-;;; major-version: 1 byte and one of 2, 3, or 4
-;;; revision: 1 byte, usually (always?) == 0
-;;; flags: 1 byte that indicates additional info like compression, etc
-;;; size: a sync-safe, 32-bit integer
-;;; All of this is then followed by the actually frames themselves
-(define-tagged-binary-class generic-id3-tag ()
-  ((identifier     (iso-8859-1 :length 3))
-   (major-version  u1)
-   (revision       u1)
-   (flags          u1)
-   (size           id3-sync-safe-u32))
-  (:dispatch
-   (ecase major-version
-     (2 'id3v2.2-tag)
-     (3 'id3v2.3-tag)
-     (4 'id3v2.4-tag) ; XXX - todo
-     )))
 
 (defgeneric data-bytes (frame))
 (defgeneric frame-header-size (frame))
@@ -519,7 +502,10 @@ characters"
 (define-binary-class raw-frame-v2.3 (raw-frame id3v2.3-frame) ())
 (define-binary-class raw-frame-v2.4 (raw-frame id3v2.4-frame) ())
 
-;;;; Concrete frames, listed by the number found in the ID3 "specs"
+;;;; Concrete frames, listed by the number found in the ID3 "specs".
+;;; The numbers below (e.g. 4.1) come from V2.2/2.3 of the "specs".  V2.4
+;;; hosed all the numbering and is not totally consistent with 2.3/2.4
+
 ;;; 4.1
 (define-binary-class ufi-frame-v2.2 (generic-ufid-frame id3v2.2-frame) ())
 (define-binary-class ufid-frame-v2.3 (generic-ufid-frame id3v2.3-frame) ())
@@ -733,12 +719,10 @@ characters"
 ;;; 4.12
 (define-binary-class rva-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class rvad-frame-v2.3 (raw-frame-v2.3) ()) ; v2.3 only
-(define-binary-class rvad-frame-v2.4 (raw-frame-v2.4) ()) ; v2.3 only
 
 ;;; 4.13
 (define-binary-class equ-frame-v2.2 (raw-frame-v2.2) ())
 (define-binary-class equa-frame-v2.3 (raw-frame-v2.3) ()) ; v2.3 only
-(define-binary-class equa-frame-v2.4 (raw-frame-v2.4) ()) ; v2.3 only
 
 ;;; 4.14
 (define-binary-class rev-frame-v2.2 (raw-frame-v2.2) ())
@@ -1008,37 +992,46 @@ characters"
           (case (aref name 0)
             (#\T
              (when (not (possibly-valid-frame-id? name))
-               (error "<~a> is NOT a valid text-info frame name" name))
-             (format t "Warning: encountered an unknown text-info frame, ~a~%" name)
+               (error "<~a> is NOT a valid text-info frame name for ID3v2.~d" name version))
+             (when *pedantic*
+               (warn-user "File: ~a~%For ID3v2.~d, encountered an unknown text-info frame, <~a>~%"
+                          *current-file*
+                          version
+                          name))
              (ecase version
                (2 'text-info-frame-v2.2)
                (3 'text-info-frame-v2.3)
                (4 'text-info-frame-v2.4)))
-             (#\W
+            (#\W
              (when (not (possibly-valid-frame-id? name))
-               (error "<~a> is NOT a valid url-link-info frame name" name))
-             (format t "Warning: encountered an unknown url-link-info frame, ~a~%" name)
-             (ecase (length name)
+               (error "<~a> is NOT a valid url-link-info frame name for ID3V2.~d" name version))
+             (when *pedantic*
+               (warn-user "File:~a~%For ID3v2.~d, encountered an unknown url-link-info frame, <~a>~%"
+                          *current-file*
+                          version
+                          name))
+             (ecase version
                (2 'url-link-frame-v2.2)
                (3 'url-link-frame-v2.3)
                (4 'url-link-frame-v2.4)))
-             (t
+            (t
              ;; we don't recognize the frame name.  if it could
              ;; possibly be a real frame name, then just read
              ;; it raw
-             (format t "file ~a~%Unknown frame type <~a> encountered~%"
-                     *current-file* name)
              (if (not (possibly-valid-frame-id? name))
+                 (error "Bad frame name")
                  (progn
-                   ;; written this was so I can debug...
-                   (error "Bad frame name")
-                   nil)
-                 ;; possibly a frame name, so just read it in raw
-                 (ecase (length name)
-                   (2 'raw-frame-v2.2)
-                   (3 'raw-frame-v2.3)
-                   (4 'raw-frame-v2.4))))))
-          found-class))
+                   (when *pedantic*
+                     (warn-user "File: ~a~%Valid, but unknown frame type <~a> encountered~%"
+                                *current-file*
+                                name))
+
+                   ;; possibly a frame name, so just read it in raw
+                   (ecase version
+                     (2 'raw-frame-v2.2)
+                     (3 'raw-frame-v2.3)
+                     (4 'raw-frame-v2.4)))))))
+    found-class))
 
 ;;; Remove unsync scheme
 ;;; Replace any FF 00 sequences with FF (ie, drop the 00)
@@ -1169,6 +1162,24 @@ characters"
    (restrictions         (optional :type 'u1 :if (and (extended-p flags) (v2.4-ext-header-restrictions-p flags ext-flags))))
    (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.4-frame))))
 
+;;; ID3 information is stored as (at position 0 of a file):
+;;; identifier: 3 bytes == "ID3"
+;;; major-version: 1 byte and one of 2, 3, or 4
+;;; revision: 1 byte, usually (always?) == 0
+;;; flags: 1 byte that indicates additional info like compression, etc
+;;; size: a sync-safe, 32-bit integer
+;;; All of this is then followed by the actually frames themselves
+(define-tagged-binary-class generic-id3-tag ()
+  ((identifier     (iso-8859-1 :length 3))
+   (major-version  u1)
+   (revision       u1)
+   (flags          u1)
+   (size           id3-sync-safe-u32))
+  (:dispatch
+   (ecase major-version
+     (2 'id3v2.2-tag)
+     (3 'id3v2.3-tag)
+     (4 'id3v2.4-tag))))
 
 ;;; Frame flags for v2.3/4
 ;;; NB: v2.2 only really defines bit-7. It does document bit-6 as being the
@@ -1246,34 +1257,37 @@ characters"
 ;;; the end of the file.
 (defun id3-p (file)
   (with-open-file (in file :element-type 'octet)
-    (or (str= "ID3" (read-value 'iso-8859-1 in :length 3))
-        (let ((len (file-length in)))
-          (if (> len 128)
-              (progn
-                (file-position in (- (file-length in) 128))
-                (str= "TAG" (read-value 'iso-8859-1 in :length 3)))
-              nil)))))
+    (let* ((has-id3v2.2+ (str= "ID3" (read-value 'iso-8859-1 in :length 3)))
+           (has-id3v2.1 (let ((len (file-length in)))
+                          (if (> len 128)
+                              (progn
+                                (file-position in (- (file-length in) 128))
+                                (str= "TAG" (read-value 'iso-8859-1 in :length 3)))
+                              nil))))
+      (values has-id3v2.2+ has-id3v2.1))))
 
 ;;; Check to see if FILE is an MP3 file (or more precisely,
 ;;; if it already has any ID3 tags in it). If so, return
 ;;; both the newer (v2.[234]) tag and any older (v2.1) tag
 (defun read-id3 (file)
   (let ((*current-file* file)
-        (tag1)
-        (tag2))
+        (tag-v2.2+)
+        (tag-v2.1))
 
-    (if (id3-p file)
+    (multiple-value-bind (has-id3v2.2+ has-id3v2.1) (id3-p file)
+      (when (or has-id3v2.2+ has-id3v2.1)
         (with-open-file (in file :element-type 'octet)
-          (setf tag1 (read-value 'generic-id3-tag in))
-          (let ((len (file-length in))
-                (tst))
-            (when (> len 128)
-              (file-position in (- len 128))
-              (setf tst (read-value 'id3-v2.1-tag in))
-              (if (str= (tag tst) "TAG")
-                  (setf tag2 tst))))))
-    ;(when (and tag1 (= 4 (major-version tag1)) (break)))
-    (values tag1 tag2)))
+          (when has-id3v2.2+
+            (setf tag-v2.2+ (read-value 'generic-id3-tag in)))
+          (when has-id3v2.1
+            (let ((len (file-length in))
+                  (tst))
+              (when (> len 128)
+                (file-position in (- len 128))
+                (setf tst (read-value 'id3-v2.1-tag in))
+                (if (str= (tag tst) "TAG")
+                    (setf tag-v2.1 tst))))))))
+    (values tag-v2.2+ tag-v2.1)))
 
 ;;; Write out newer (v2.[234]) tag and v2.1 tag
 ;;; Remember: we might have read in "broken" frames, so we need to recalculate
@@ -1306,7 +1320,7 @@ characters"
                ;; do whatever you want here
                (incf count)))
          (condition (c)
-           (format t "File: ~a~%Condition: ~a~%" f c)))))
+           (format t "~%File: ~a~%Condition: ~a~%" f c)))))
 
     (format t "~&~&~:d MP3s examined~%" count)))
 

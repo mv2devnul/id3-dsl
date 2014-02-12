@@ -1295,10 +1295,12 @@ characters"
 (defun write-id3 (file id3 &optional v2.1-tag)
   (let ((new-tag-size 10)) ; the ID3 tag header size
     (loop for frame in (frames id3) do
-      (setf (size frame) (calc-frame-size frame)) ; make sure we have correct frames sizes
+      (setf (size frame)
+            (calc-frame-size frame)) ; make sure we have correct frames sizes
       (incf new-tag-size (+ (size frame) (frame-header-size frame))))
 
     (debug new-tag-size (size id3))
+
     (when (> new-tag-size (size id3))
         (error "Need to implement growing tag logic"))
 
@@ -1306,6 +1308,7 @@ characters"
       (write-value (type-of id3) out id3)
 
       (when v2.1-tag ; XXX we need to handle ADDING a v2.1 (we're just assuming replacement here)
+        ;;XXX Also need to make sure fields are correctly formatted
         (file-position out (- (file-position out 128)))
         (write-value 'id3-v2.1-tag v2.1-tag out)))))
 

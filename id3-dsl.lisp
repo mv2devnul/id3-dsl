@@ -948,17 +948,57 @@ characters"
 (define-binary-class xdor-frame-v2.3 (generic-text-info-frame id3v2.3-frame) ())
 
 ;;;; Finding frame classes
-(defun possibly-valid-frame-id? (frame-id)
-  "Test to see if a string is a potentially valid frame id"
 
-  ;; test each octet to see if it is alphanumeric and if a character, its is upper-case
-  (loop for c across frame-id do
-    (when (not (and (alphanumericp c)
-                    (if (alpha-char-p c)
-                        (upper-case-p c)
-                        t)))
-      (return-from possibly-valid-frame-id? nil)))
-  t)
+(define-condition bad-frame-name (error)
+  ((arg     :reader bad-frame-arg :initarg :arg)
+   (version :reader version       :initarg :version))
+  (:report (lambda (c stream)
+             (format stream "<~a> is not a valid frame name for ID3v2.~d"
+                     (bad-frame-arg c)
+                     (version c)))))
+
+;;; We use Lisp's FIND-CLASS/FIND-SYMBOL pair + the ID3 version we are working
+;;; on to search for defined (by the ID3 specs) classes.  A defined class is
+;;; one for which we have a class symbol.
+(defun defined-frame-class? (name version)
+  (let* ((found-class-symbol (find-symbol (mk-frame-class-name name version)))
+         (found-class))
+
+    (when found-class-symbol
+      (setf found-class (find-class found-class-symbol)))
+    found-class))
+
+;;; For simplicity's sake, a valid frame name starts with an upper-case
+;;; character, then is followed by upper-case characters or digits.
+(defun valid-frame-name (name)
+  (if (not (and (alpha-char-p (aref name 0))
+                (upper-case-p (aref name 0))))
+      nil
+      (progn
+        (loop for c across (subseq name 1) do
+          (when (not (and (alphanumericp c)
+                          (if (alpha-char-p c)
+                              (upper-case-p c)
+                              t)))
+            (return-from valid-frame-name nil)))
+        t)))
+
+;;; Get a new, valid frame-name from user
+(defparameter *allow-user-correction* nil)
+
+(defun get-user-correction (name version)
+  (if *allow-user-correction*
+      (tagbody
+       validate
+         (cerror "Enter a valid frame name." 'bad-frame-name :arg name :version version)
+         (format t "~&Treat <~a> as this frame type: " name)
+         (setf name (read-line))
+         (fresh-line)
+         (if (not (or (defined-frame-class? name version)
+                      (valid-frame-name name)))
+             (go validate)))
+      (setf name (mk-frame-class-name "raw" version)))
+  name)
 
 ;;; Create a frame-class name string.
 (defun mk-frame-class-name (id version)
@@ -967,49 +1007,50 @@ characters"
                                            (3 "-frame-v2.3")
                                            (4 "-frame-v2.4")))))
 
-;;; To instantiate frames, we take in STR, which is the frame id, create
-;;; an appropriate frame-class name, and try to find the so-named class
-;;; using FOUND-CLASS-SYMBOL.  If we don't find the class, we try the
-;;; assume that any class starting with T or W are TEXT-INFO/URL-LINK
-;;; frames, and failing that, if the class name is possibly valid,
-;;; we just return a RAW class.
+(defun warn-pedantic-frame-name (frame-name version orig-name name)
+  (warn-user "File: ~a~%For ID3v2.~d, encountered an unknown ~a frame, <~a/~a>~%"
+             *current-file*
+             version
+             frame-name
+             name
+             orig-name name))
+
+;;; To instantiate frames, we take in STR, which is the frame id, create an
+;;; appropriate frame-class name, and try to find the so-named class using
+;;; FOUND-CLASS-SYMBOL.  If we don't find the class, we try the assume that
+;;; any class starting with T or W are TEXT-INFO/URL-LINK frames, and
+;;; failing that, if the class name is possibly valid, we just return a RAW
+;;; class.
 (defun find-frame-class (str version)
-  (let* ((name (id3-string-string str))
-         (found-class-symbol (find-symbol (mk-frame-class-name name version)))
+  (let* ((orig-name (id3-string-string str))
+         (name orig-name)
          (found-class))
 
-    (debug 'find-frame-class name found-class-symbol)
+    ;; if we found the class name, return the class (to be used for
+    ;; MAKE-INSTANCE)
+    (awhen (defined-frame-class? name version)
+      (return-from find-frame-class it))
 
-    ;; if we found the class name, return the class (to be used for MAKE-INSTANCE)
-    (when found-class-symbol
-      (setf found-class (find-class found-class-symbol))
-      (return-from find-frame-class found-class))
+    ;; if not a pre-defined frame, look at general cases of starting with a
+    ;; 'T' or a 'W'.  Note that TXXX/WXXX have been accounted for, since
+    ;; they are pre-defined
+    (if (not (valid-frame-name name))
+        (setf name (get-user-correction name version)))
 
-    ;; if not a "normal" frame-id, look at general cases of
-    ;; starting with a 'T' or a 'W'.  Note that TXXX/WXXX have
-    ;; been accounted for above, so we can just look at first character
     (setf found-class
           (case (aref name 0)
             (#\T
-             (when (not (possibly-valid-frame-id? name))
-               (error "<~a> is NOT a valid text-info frame name for ID3v2.~d" name version))
              (when *pedantic*
-               (warn-user "File: ~a~%For ID3v2.~d, encountered an unknown text-info frame, <~a>~%"
-                          *current-file*
-                          version
-                          name))
+               (warn-pedantic-frame-name "text-info" version orig-name name))
+
              (ecase version
                (2 'text-info-frame-v2.2)
                (3 'text-info-frame-v2.3)
                (4 'text-info-frame-v2.4)))
             (#\W
-             (when (not (possibly-valid-frame-id? name))
-               (error "<~a> is NOT a valid url-link-info frame name for ID3V2.~d" name version))
              (when *pedantic*
-               (warn-user "File:~a~%For ID3v2.~d, encountered an unknown url-link-info frame, <~a>~%"
-                          *current-file*
-                          version
-                          name))
+               (warn-pedantic-frame-name "url-link-info" version orig-name name))
+
              (ecase version
                (2 'url-link-frame-v2.2)
                (3 'url-link-frame-v2.3)
@@ -1018,19 +1059,13 @@ characters"
              ;; we don't recognize the frame name.  if it could
              ;; possibly be a real frame name, then just read
              ;; it raw
-             (if (not (possibly-valid-frame-id? name))
-                 (error "Bad frame name")
-                 (progn
-                   (when *pedantic*
-                     (warn-user "File: ~a~%Valid, but unknown frame type <~a> encountered~%"
-                                *current-file*
-                                name))
+             (when *pedantic*
+               (warn-pedantic-frame-name "" version orig-name name))
 
-                   ;; possibly a frame name, so just read it in raw
-                   (ecase version
-                     (2 'raw-frame-v2.2)
-                     (3 'raw-frame-v2.3)
-                     (4 'raw-frame-v2.4)))))))
+             (ecase version
+               (2 'raw-frame-v2.2)
+               (3 'raw-frame-v2.3)
+               (4 'raw-frame-v2.4)))))
     found-class))
 
 ;;; Remove unsync scheme
@@ -1312,8 +1347,11 @@ characters"
         (file-position out (- (file-position out 128)))
         (write-value 'id3-v2.1-tag v2.1-tag out)))))
 
+(defparameter *bad-files* nil)
+
 (defun read-dir-id3s (&optional (dir "/home/markv/Music"))
   (let ((count 0))
+    (setf *bad-files* nil)
     (cl-fad:walk-directory
      dir
      (lambda (f)
@@ -1323,6 +1361,7 @@ characters"
                ;; do whatever you want here
                (incf count)))
          (condition (c)
+           (push (list f c) *bad-files*)
            (format t "~%File: ~a~%Condition: ~a~%" f c)))))
 
     (format t "~&~&~:d MP3s examined~%" count)))

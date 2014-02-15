@@ -183,7 +183,7 @@ characters"
       (setf ns (make-id3-string
                 :bom bom :terminate term :kind kind
                 :string (flex:octets-to-string octets :external-format (make-keyword kind) :end end)))
-      (debug 'read-id3-string-returning ns)
+      (debug 'read-id3-string-returning ns (file-position instream))
       ns)))
 
 ;;; And now, the 4 ID3-STRING types
@@ -273,15 +273,19 @@ characters"
 
 ;;; calculate bytes left to read in the tag metadata
 (defun bytes-left (bytes-read)
-  (let ((ret (- (size (current-binary-object)) bytes-read)))
-    ;(debug 'bytes-left ret)
+  (let* ((cur-obj (current-binary-object))
+         (ret (- (size cur-obj)
+                 bytes-read)))
+    (debug 'bytes-left ret)
     ret))
 
 ;;; Generic wrapper to read a frame: catches an IN-PADDING condition, terminates
 ;;; and returns nil to signal we are done reading.
 (defun read-frame (frame-type in)
   (handler-case
-      (read-value frame-type in)
+      (let* ((cur-pos (file-position in))
+             (frame (read-value frame-type in)))
+        (debug 'read-frame cur-pos frame))
     (in-padding () nil)))
 
 ;;; Read an expected frame ID of LENGTH (either 3 for V2.2 or
@@ -368,7 +372,7 @@ characters"
 ;;; Don't try to grok the frame, just read in its payload.
 (define-binary-class raw-frame ()
   ((data (raw-bytes :size (data-bytes (current-binary-object))))))
-(generate-after-methods raw-frame 0 raw-bytes)
+(generate-after-methods raw-frame 0 data)
 
 (define-binary-class generic-comment-frame ()
   ((encoding    u1)
@@ -1029,6 +1033,7 @@ characters"
     ;; if we found the class name, return the class (to be used for
     ;; MAKE-INSTANCE)
     (awhen (defined-frame-class? name version)
+      (debug 'find-frame-class-found-defined-frame name version)
       (return-from find-frame-class it))
 
     ;; if not a pre-defined frame, look at general cases of starting with a
@@ -1036,6 +1041,8 @@ characters"
     ;; they are pre-defined
     (if (not (valid-frame-name name))
         (setf name (get-user-correction name version)))
+
+    (debug 'find-frame-class-looking-for name)
 
     (setf found-class
           (case (aref name 0)
@@ -1066,6 +1073,7 @@ characters"
                (2 'raw-frame-v2.2)
                (3 'raw-frame-v2.3)
                (4 'raw-frame-v2.4)))))
+    (debug 'find-frame-class-found-class found-class)
     found-class))
 
 ;;; Remove unsync scheme
@@ -1109,12 +1117,20 @@ characters"
 
 
 ;;; ID3 frames
+;;; XXX Probably should move the reading in of extended tag header here???
 (define-binary-type id3-frames (tag-size flags frame-type)
   (:reader (in)
-    (debug 'id3-frames-reader tag-size flags frame-type)
+    (debug 'id3-frames-reader (file-position in) tag-size flags frame-type)
+
     (let ((octets)
           (in-stream)
           (size 0))
+
+      ;; Note: since we are creating a new input stream below, we need to
+      ;; look at the file-position to calculate how many bytes to read in.
+      ;; This is because the tag-size passed in *includes* any extended
+      ;; header, but we've already read it in.
+      (decf tag-size (- (file-position in) 10)) ; 10 == tag header size
 
       (if (not (header-unsync-p flags))
           (progn                    ; simply read in the octets as is
@@ -1130,10 +1146,12 @@ characters"
             size (length octets))
 
       ;; XXX change here to read in v2.4 frames compressed/unsync/encrypted?
+      (debug 'id3-frames-reader size)
       (loop with to-read = size
             while (plusp to-read)
             for frame = (read-frame frame-type in-stream)
             while frame do
+              (debug 'id3-frames-reader frame to-read)
               (decf to-read (+ (frame-header-size frame) (size frame)))
             collect frame
             finally (loop repeat (1- to-read) do (read-byte in-stream)))))
@@ -1288,18 +1306,31 @@ characters"
   (:dispatch (find-frame-class id 4)))
 
 
-;;; Check to see if file starts with ID3 or if the old V2.1 tag is at
+;;; Functions to see if file starts with ID3 or if the old V2.1 tag is at
 ;;; the end of the file.
+(defun has-id3v2.2+ (stream)
+  (file-position stream 0)
+  (let* ((cur-pos (file-position stream))
+         (val (read-value 'iso-8859-1 stream :length 3)))
+    (file-position stream cur-pos)
+    (str= val "ID3")))
+
+(defun has-id3v2.1 (stream)
+  (let* ((len (file-length stream))
+         (cur-pos (file-position stream))
+         (val))
+
+    (if (> len 128)
+        (progn
+          (file-position stream (- len 128))
+          (setf val (read-value 'iso-8859-1 stream :length 3))
+          (file-position stream cur-pos)
+          (str= val "TAG"))
+        nil)))
+
 (defun id3-p (file)
   (with-open-file (in file :element-type 'octet)
-    (let* ((has-id3v2.2+ (str= "ID3" (read-value 'iso-8859-1 in :length 3)))
-           (has-id3v2.1 (let ((len (file-length in)))
-                          (if (> len 128)
-                              (progn
-                                (file-position in (- (file-length in) 128))
-                                (str= "TAG" (read-value 'iso-8859-1 in :length 3)))
-                              nil))))
-      (values has-id3v2.2+ has-id3v2.1))))
+    (values (has-id3v2.2+ in) (has-id3v2.1 in))))
 
 ;;; Check to see if FILE is an MP3 file (or more precisely,
 ;;; if it already has any ID3 tags in it). If so, return
@@ -1339,19 +1370,22 @@ characters"
     (when (> new-tag-size (size id3))
         (error "Need to implement growing tag logic"))
 
-    (with-open-file (out file :element-type 'octet :direction :output :if-does-not-exist :create :if-exists :overwrite)
+    (with-open-file (out file :element-type 'octet :direction :io
+                              :if-does-not-exist :create :if-exists :overwrite)
+
+      ;; for now, just handling files that have ID3s already
+      (assert (has-id3v2.2+ out))
       (write-value (type-of id3) out id3)
 
-      (when v2.1-tag ; XXX we need to handle ADDING a v2.1 (we're just assuming replacement here)
+      (when v2.1-tag
         ;;XXX Also need to make sure fields are correctly formatted
+        (assert (has-id3v2.1 out)) ; XXX for now
         (file-position out (- (file-position out 128)))
         (write-value 'id3-v2.1-tag v2.1-tag out)))))
 
-(defparameter *bad-files* nil)
-
-(defun read-dir-id3s (&optional (dir "/home/markv/Music"))
+(defun read-dir-id3s (&optional (dir "/home/markv/Music") (func nil))
+  (setf *bad-files* nil)
   (let ((count 0))
-    (setf *bad-files* nil)
     (cl-fad:walk-directory
      dir
      (lambda (f)
@@ -1359,18 +1393,18 @@ characters"
            (multiple-value-bind (id3 id3v2.1) (read-id3 f)
              (when (or id3 id3v2.1)
                ;; do whatever you want here
+               (when func (funcall func f id3 id3v2.1))
                (incf count)))
          (condition (c)
-           (push (list f c) *bad-files*)
            (format t "~%File: ~a~%Condition: ~a~%" f c)))))
 
     (format t "~&~&~:d MP3s examined~%" count)))
 
 (defparameter *lots* "/smb/devnulpogo/markv/Backups/klinger/Music/iTunes/iTunes Music/Music/Boston/Third Stage/08 I Think I Like It_Can'tcha Say.mp3")
 
-(defun ls-frames (foo)
+(defun ls-frames (id3-tag)
   (let ((count 0))
-    (dolist (f (frames foo))
+    (dolist (f (frames id3-tag))
       (format t "~3d: ~a~%" count f)
       (incf count))))
 
@@ -1378,3 +1412,55 @@ characters"
   (dolist (ft frame-types)
     (setf (frames id3)
           (remove-if (lambda (x) (typep x ft)) (frames id3)))))
+
+(defparameter *frame-count-db* (make-hash-table :test #'equalp))
+(defstruct frame-count-db-entry count files)
+
+(defun count-frames (file id3 id3v2.1)
+  (when id3
+    (dolist (f (frames id3))
+      (let* ((name (format nil "frame-~a-v2.~d" (id3-string-string (id f)) (major-version id3))))
+        (multiple-value-bind (val found) (gethash name *frame-count-db*)
+          (if found
+              (progn
+                (pushnew file (frame-count-db-entry-files val))
+                (incf (frame-count-db-entry-count val))
+                (setf (gethash name *frame-count-db*) val))
+              (let ((new-val (make-frame-count-db-entry :count 1 :files (list file))))
+                (setf (gethash name *frame-count-db*) new-val)))))))
+
+  (when id3v2.1
+    (multiple-value-bind (val found) (gethash "frame-v2.1" *frame-count-db*)
+      (if found
+          (progn
+            (pushnew file (frame-count-db-entry-files val))
+            (incf (frame-count-db-entry-count val))
+            (setf (gethash "frame-v2.1" *frame-count-db*) val))
+          (let ((new-val (make-frame-count-db-entry :count 1 :files (list file))))
+            (setf (gethash "frame-v2.1" *frame-count-db*) new-val))))))
+
+
+(defun dump-frame-count ()
+  (let ((tot 0))
+    (maphash (lambda (k v)
+               (format t "~a: ~:d times in ~:d files~%"
+                       k
+                       (frame-count-db-entry-count v)
+                       (length (frame-count-db-entry-files v)))
+               (incf tot (frame-count-db-entry-count v))) *frame-count-db*)
+    (format t "Total: ~:d~%" tot)))
+
+(defun priv-check ()
+  (let ((count 0)
+        (ret))
+    (maphash (lambda (k v) (if (string= "frame-PRIV-v2.3" k) (setf ret v))) *frame-count-db*)
+    (when ret
+      (loop for file in (frame-count-db-entry-files ret) do
+        (let ((id3 (read-id3 file)))
+          (when id3
+            (loop for frame in (frames id3) do
+              (incf count)
+              ;(when (> count 1000) (break))
+              (when (str= "PRIV" (id frame))
+                (format t "~a:~a/~:d~%" file (owner-id frame) (length (identifier frame)))))))))
+    count))

@@ -1,7 +1,16 @@
 (in-package #:id3-dsl)
 
+;;;; Current thought: shadow read/writes to handle sync/compress/encrypt?
+(defun read-byte (stream &optional eof-error-p eof-error-value)
+  ;(format t "My read-byte~%")
+  (common-lisp:read-byte stream eof-error-p eof-error-value))
+(defun read-sequence (seq stream &key (start 0) (end nil))
+  ;(format t "My read-sequence~%")
+  (common-lisp:read-sequence seq stream :start start :end end))
+
+;;; (ccl:advise read-frame (progn (format t "~:d~%" (file-position (second ccl:arglist)))) :when :before :name :foo)
 (defparameter *dbg* nil)
-(defmacro debug (&body body)
+(defmacro my-debug (&body body)
   `(if *dbg* (dbg ,@body)))
 
 (defparameter *pedantic* nil "if set, we warn about more things")
@@ -50,7 +59,15 @@
 
 (defmethod print-object ((s id3-string) stream)
   (with-slots (kind bom string terminate) s
-    (format stream "~a/~a:<~a>:~a" kind bom string terminate)))
+    (format stream "~a/~a:<~a>:~a"
+            kind
+            (if bom
+                (if (= #xfffe bom)
+                    "ucs-2le"
+                    "ucs-2be")
+                "none")
+            string
+            (if terminate "terminated" "non-terminated"))))
 
 ;;; Convenience function
 (defun make-id3-string (&key kind bom string terminate)
@@ -72,9 +89,11 @@
 ;;; in a frame, you follow this protocol (Assume foo is a COMM-FRAME-V2.3,
 ;;; and we want to change the TEXT slot):
 ;;;
-;;; (setf (text foo) (change-string-to (text-foo) "The New Description"))
+;;; (setf (text foo) (change-id3-string-to (text-foo) "The New Description"))
 ;;;
 ;;; Klunky, but workable.
+(defgeneric change-id3-string-to (orig new))
+
 (defmethod change-id3-string-to ((orig id3-string) new)
   (with-slots (kind bom terminate) orig
     (make-id3-string :kind kind
@@ -127,7 +146,7 @@ characters"
          (bom)
          (ns))
 
-    (debug 'read-id3-string-entry kind length (file-position instream))
+    (my-debug 'read-id3-string-entry kind length (file-position instream))
 
     (when (eq kind 'ucs-2)
       (if length
@@ -178,12 +197,12 @@ characters"
               (incf end))
             (decf end)))
 
-      (debug 'read-id3-string-making-ns bom term kind octets)
+      (my-debug 'read-id3-string-making-ns bom term kind octets)
 
       (setf ns (make-id3-string
                 :bom bom :terminate term :kind kind
                 :string (flex:octets-to-string octets :external-format (make-keyword kind) :end end)))
-      (debug 'read-id3-string-returning ns (file-position instream))
+      (my-debug 'read-id3-string-returning ns (file-position instream))
       ns)))
 
 ;;; And now, the 4 ID3-STRING types
@@ -276,17 +295,33 @@ characters"
   (let* ((cur-obj (current-binary-object))
          (ret (- (size cur-obj)
                  bytes-read)))
-    (debug 'bytes-left ret)
+    (my-debug 'bytes-left ret)
     ret))
 
 ;;; Generic wrapper to read a frame: catches an IN-PADDING condition, terminates
 ;;; and returns nil to signal we are done reading.
 (defun read-frame (frame-type in)
-  (handler-case
-      (let* ((cur-pos (file-position in))
-             (frame (read-value frame-type in)))
-        (debug 'read-frame cur-pos frame))
-    (in-padding () nil)))
+  (let* ((cur-pos (file-position in))
+         (frame))
+
+    (handler-case
+        (setf frame (read-value frame-type in))
+      (in-padding () nil)
+      (condition (c)
+        (warn-user "File: ~a, pos = ~:d~%While trying to read a frame, got condition:~%~a~%~%Retrying to read it as RAW"
+                   *current-file* cur-pos c)
+        (setf frame-type (ecase frame-type
+                           (id3v2.2-frame 'id3v2.2-skiped-frame)
+                           (id3v2.3-frame 'id3v2.3-skipped-frame)
+                           (id3v2.4-frame 'id3v2.4-skipped-frame)))
+        (file-position in cur-pos)
+        (handler-case
+            (setf frame (read-value frame-type in))
+          (condition (c)
+            (error "File: ~a~%Reading RAW failed:~%~a~%" *current-file* c)))))
+
+    (my-debug 'read-frame cur-pos frame)
+    frame))
 
 ;;; Read an expected frame ID of LENGTH (either 3 for V2.2 or
 ;;; 4 for V2.3/4.
@@ -302,7 +337,7 @@ characters"
                                  'string
                                  (string (code-char first-byte))
                                  (id3-string-string (read-value 'iso-8859-1 in :length (1- length)))))))
-               (debug 'reading-frame-id ns)
+               (my-debug 'reading-frame-id ns)
                ns)))
   (:writer (out id)
            (write-value 'iso-8859-1 out id :length length)))
@@ -314,7 +349,7 @@ characters"
   (:writer (out value)
            (when if (write-value type out value))))
 
-;;; A 32-bit, sync-safe integer. Used primarily for tag/frame sizes
+;;; A 32-bit, sync-safe integer. Used for tag/frame sizes
 (define-binary-type id3-sync-safe-u32 () (unsigned-integer :bytes 4 :bits-per-byte 7))
 
 (defgeneric data-bytes (frame))
@@ -324,11 +359,11 @@ characters"
 ;;; unknown frames, etc.
 (define-binary-type raw-bytes (size)
   (:reader (in)
-           (let ((buf (make-octets size)))
-             (read-sequence buf in)
-             buf))
+   (let ((buf (make-octets size)))
+     (read-sequence buf in)
+     buf))
   (:writer (out buf)
-           (write-sequence buf out)))
+    (write-sequence buf out)))
 
 ;;;; The "Generics": abstract classes used for describing real frame classes
 
@@ -495,11 +530,11 @@ characters"
    (comment (iso-8859-1 :length 30)) ; the last two bytes of COMMENT can be used as a track number
    (genre   u1)))
 
-;;;; NB: in listing the super classes of a frame class, ORDER IS IMPORTANT!
-;;;; You MUST list the "generic" class first, then the id3v2.x class second.
-;;;; If you don't, then on write, the data in the frame will be written out before
-;;;; the frame header.  This is true on SBCL/ABCL/CCL/CLISP.  I have NOT tested it on
-;;;; other Lisps.
+;;; NB: in listing the super classes of a frame class, ORDER IS IMPORTANT!
+;;; You MUST list the "generic" class first, then the id3v2.x class second.
+;;; If you don't, then on write, the data in the frame will be written out before
+;;; the frame header.  This is true on SBCL/ABCL/CCL/CLISP.  I have NOT tested it on
+;;; other Lisps.
 
 ;;;; "RAW" frames: just slurp in the frame contents as octets
 (define-binary-class raw-frame-v2.2 (raw-frame id3v2.2-frame) ())
@@ -951,6 +986,114 @@ characters"
 (define-binary-class ncon-frame-v2.3 (raw-frame-v2.3) ())
 (define-binary-class xdor-frame-v2.3 (generic-text-info-frame id3v2.3-frame) ())
 
+;;; Frame flags for v2.3/4
+;;; NB: v2.2 only really defines bit-7. It does document bit-6 as being the
+;;; compression flag, but then states that if it is set, the software should
+;;; "ignore the entire tag if this (bit-6) is set"
+(defun frame-altertag-p   (flags) (logbitp 15 flags))
+(defun frame-alterfile-p  (flags) (logbitp 14 flags))
+(defun frame-readonly-p   (flags) (logbitp 13 flags))
+(defun frame-compressed-p (flags) (logbitp 7 flags))
+(defun frame-encrypted-p  (flags) (logbitp 6 flags))
+(defun frame-grouped-p    (flags) (logbitp 5 flags))
+
+;;; frame flags are different for 2.4.  Also note, that some flags indicate that additional data
+;;; follows the frame header and these must be read in the order of the flags
+(defun v2.4-frame-altertag-p  (flags) (logbitp 14 flags)) ; no additional data
+(defun v2.4-frame-alterfile-p (flags) (logbitp 13 flags)) ; no additional data
+(defun v2.4-frame-readonly-p  (flags) (logbitp 12 flags)) ; no additional data
+(defun v2.4-frame-groupid-p   (flags) (logbitp 6 flags))  ; one byte added to frame
+(defun v2.4-frame-compress-p  (flags) (logbitp 3 flags))  ; one byte added to frame
+(defun v2.4-frame-encrypt-p   (flags) (logbitp 2 flags))  ; one byte added to frame
+(defun v2.4-frame-unsynch-p   (flags) (logbitp 1 flags))  ; no bytes, but should datalen be set
+(defun v2.4-frame-datalen-p   (flags) (logbitp 0 flags))  ; four bytes added to frame
+
+(define-binary-class id3v2.2-skipped-frame ()
+  ((id   (frame-id :length 3))
+   (size u3)
+   (data (raw-bytes :size size))))
+
+(defparameter *frame-compressed*   nil)
+(defparameter *frame-encrypted*    nil)
+(defparameter *frame-needs-unsync* nil) ; only valid for v2.4
+
+;;; We need a semi-transparent way to handle frames that are
+;;; compressed, encrypted, or need to have unsync scheme removed.
+(define-binary-type id3v2.3-frame-flags ()
+  (:reader (in)
+    (let ((_flags (read-value 'u2 in)))
+      (setf *frame-compressed* (frame-compressed-p _flags))
+      (setf *frame-encrypted*  (frame-encrypted-p _flags))
+      (if (not (zerop _flags)) (format t "Would push uncompress/etc modules onto stream here:~x~%" _flags))
+      _flags))
+  (:writer (out value)
+    (write-value 'u2 out value)))
+
+(define-binary-class id3v2.3-skipped-frame ()
+  ((id   (frame-id :length 4))
+   (size  u4)
+   (flags u2)
+   (data  (raw-bytes :size size))))
+
+(define-binary-class id3v2.4-skipped-frame ()
+  ((id    (frame-id :length 4))
+   (size  u4)
+   (flags u2)
+   (data  (raw-bytes :size size))))
+
+(defmethod frame-header-size ((frame id3v2.2-skipped-frame)) 6)
+(defmethod frame-header-size ((frame id3v2.3-skipped-frame)) 10)
+(defmethod frame-header-size ((frame id3v2.4-skipped-frame)) 10)
+
+(define-tagged-binary-class id3v2.2-frame ()
+  ((id   (frame-id :length 3))
+   (size u3))
+  (:dispatch (find-frame-class id 2)))
+
+
+;;; XXX how to handle compression/encryption???
+(define-tagged-binary-class id3v2.3-frame ()
+  ((id                (frame-id :length 4))
+   (size              u4)
+   (flags             id3v2.3-frame-flags)
+   (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
+   (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
+   (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
+  (:dispatch (find-frame-class id 3)))
+
+;;; XXX how to handle compression/encryption/unsync
+(define-tagged-binary-class id3v2.4-frame ()
+  ((id                (frame-id :length 4))
+   (size              id3-sync-safe-u32)
+   (flags             u2)
+   (group-id-byte     (optional :type 'u1 :if (v2.4-frame-groupid-p flags)))
+   (compress-byte     (optional :type 'u1 :if (v2.4-frame-compress-p flags)))
+   (encrypt-byte      (optional :type 'u1 :if (v2.4-frame-encrypt-p flags)))
+   (data-length       (optional :type 'id3-sync-safe-u32 :if (v2.4-frame-datalen-p flags))))
+  (:dispatch (find-frame-class id 4)))
+
+(defmethod frame-header-size ((frame id3v2.2-frame)) 6)
+(defmethod frame-header-size ((frame id3v2.3-frame)) 10)
+(defmethod frame-header-size ((frame id3v2.4-frame)) 10)
+
+(defmethod data-bytes ((frame id3v2.2-frame))
+  (size frame))
+
+(defmethod data-bytes ((frame id3v2.3-frame))
+  (let ((flags (flags frame)))
+    (- (size frame)
+       (if (frame-compressed-p flags) 4 0)
+       (if (frame-encrypted-p flags) 1 0)
+       (if (frame-grouped-p flags) 1 0))))
+
+(defmethod data-bytes ((frame id3v2.4-frame))
+  (let ((flags (flags frame)))
+    (- (size frame)
+       (if (v2.4-frame-groupid-p flags) 1 0)
+       (if (v2.4-frame-compress-p flags) 1 0)
+       (if (v2.4-frame-encrypt-p flags) 1 0)
+       (if (v2.4-frame-datalen-p flags) 4 0))))
+
 ;;;; Finding frame classes
 
 (define-condition bad-frame-name (error)
@@ -1033,7 +1176,7 @@ characters"
     ;; if we found the class name, return the class (to be used for
     ;; MAKE-INSTANCE)
     (awhen (defined-frame-class? name version)
-      (debug 'find-frame-class-found-defined-frame name version)
+      (my-debug 'find-frame-class-found-defined-frame name version)
       (return-from find-frame-class it))
 
     ;; if not a pre-defined frame, look at general cases of starting with a
@@ -1042,7 +1185,7 @@ characters"
     (if (not (valid-frame-name name))
         (setf name (get-user-correction name version)))
 
-    (debug 'find-frame-class-looking-for name)
+    (my-debug 'find-frame-class-looking-for name)
 
     (setf found-class
           (case (aref name 0)
@@ -1073,8 +1216,9 @@ characters"
                (2 'raw-frame-v2.2)
                (3 'raw-frame-v2.3)
                (4 'raw-frame-v2.4)))))
-    (debug 'find-frame-class-found-class found-class)
+    (my-debug 'find-frame-class-found-class found-class)
     found-class))
+
 
 ;;; Remove unsync scheme
 ;;; Replace any FF 00 sequences with FF (ie, drop the 00)
@@ -1115,84 +1259,102 @@ characters"
     bytes-written))
 
 
-
-;;; ID3 frames
-;;; XXX Probably should move the reading in of extended tag header here???
-(define-binary-type id3-frames (tag-size flags frame-type)
-  (:reader (in)
-    (debug 'id3-frames-reader (file-position in) tag-size flags frame-type)
-
-    (let ((octets)
-          (in-stream)
-          (size 0))
-
-      ;; Note: since we are creating a new input stream below, we need to
-      ;; look at the file-position to calculate how many bytes to read in.
-      ;; This is because the tag-size passed in *includes* any extended
-      ;; header, but we've already read it in.
-      (decf tag-size (- (file-position in) 10)) ; 10 == tag header size
-
-      (if (not (header-unsync-p flags))
-          (progn                    ; simply read in the octets as is
-            (setf octets (make-octets tag-size))
-            (read-sequence octets in))
-          ;; else, read and remove unsync
-          (setf octets (remove-unsync-scheme in tag-size)))
-
-      ;; create a FLEX in-memory stream of the frame area and read frames from that.
-      ;; this handles the unsync cleanly, plus makes is impossible to have "run-away"
-      ;; read from badly formed ID3 tags.
-      (setf in-stream (flex:make-in-memory-input-stream octets)
-            size (length octets))
-
-      ;; XXX change here to read in v2.4 frames compressed/unsync/encrypted?
-      (debug 'id3-frames-reader size)
-      (loop with to-read = size
-            while (plusp to-read)
-            for frame = (read-frame frame-type in-stream)
-            while frame do
-              (debug 'id3-frames-reader frame to-read)
-              (decf to-read (+ (frame-header-size frame) (size frame)))
-            collect frame
-            finally (loop repeat (1- to-read) do (read-byte in-stream)))))
-
-  (:writer (out frames)
-    ;; Write frames to FLEXI sequence.
-    (let ((buf (flex:with-output-to-sequence (tmp)
-                 (loop with to-write = tag-size
-                       for frame in frames do
-                         (write-value frame-type tmp frame)
-                         (decf to-write (+ (frame-header-size frame) (size frame)))))))
-
-      (if (not (header-unsync-p flags))
-          (progn
-            (write-sequence buf out)
-            ;; pad with #x00
-            (loop for count from (length buf) upto (1- tag-size) do
-              (write-byte #x00 out)))
-
-          ;; else, we have to apply unsync scheme before wrting out to file
-          (let ((bytes-written (apply-unsync-scheme buf out)))
-            ;; write out padding, if any
-            (loop for n from bytes-written  upto (1- tag-size) do
-              (write-byte #x00 out)))))))
-
 ;;; ID3V2.3/4 header flags
 (defun header-unsync-p       (flags)             (logbitp 7 flags))
 (defun extended-p            (flags)             (logbitp 6 flags))
 (defun header-experimental-p (flags)             (logbitp 5 flags))
 (defun header-footer-p       (flags)             (logbitp 4 flags)) ; v2.4 only
 
+;;; Extended header flags: V2.3
+(defun ext-header-crc-p      (flags ext-flags)   (and (extended-p flags) (logbitp 15 ext-flags)))
+
+
+;;; ID3 frames
+;;; XXX Probably should move the reading in of extended tag header here???
+(define-binary-type id3-frames (tag-size flags frame-type)
+  (:reader (in)
+           (my-debug 'id3-frames-reader (file-position in) tag-size flags frame-type)
+
+           (let ((octets)
+                 (in-stream)
+                 (size 0))
+
+             ;; Note: since we are creating a new input stream below, we need to
+             ;; look at the file-position to calculate how many bytes to read in.
+             ;; This is because the tag-size passed in *includes* any extended
+             ;; header, but we've already read it in.
+             (decf tag-size (- (file-position in) 10)) ; 10 == tag header size
+
+             (if (not (header-unsync-p flags))
+                 (progn                 ; simply read in the octets as is
+                   (setf octets (make-octets tag-size))
+                   (read-sequence octets in))
+                 ;; else, read and remove unsync
+                 (setf octets (remove-unsync-scheme in tag-size)))
+
+             ;; create a FLEX in-memory stream of the frame area and read frames from that.
+             ;; this handles the unsync cleanly, plus makes is impossible to have "run-away"
+             ;; read from badly formed ID3 tags.
+             (setf in-stream (flex:make-in-memory-input-stream octets)
+                   size (length octets))
+
+             ;; XXX change here to read in v2.4 frames compressed/unsync/encrypted?
+             (my-debug 'id3-frames-reader size)
+             (loop with to-read = size
+                   while (plusp to-read)
+                   for frame = (read-frame frame-type in-stream)
+                   while frame do
+                     (my-debug 'id3-frames-reader frame to-read)
+                     (decf to-read (+ (frame-header-size frame) (size frame)))
+                   collect frame
+                   finally (loop repeat (1- to-read) do (read-byte in-stream)))))
+
+  (:writer (out frames)
+           ;; Write frames to FLEXI sequence.
+           (let ((buf (flex:with-output-to-sequence (tmp)
+                        (loop with to-write = tag-size
+                              for frame in frames do
+                                (write-value frame-type tmp frame)
+                                (decf to-write (+ (frame-header-size frame) (size frame)))))))
+
+             (if (not (header-unsync-p flags))
+                 (progn
+                   (write-sequence buf out)
+                   ;; pad with #x00
+                   (loop for count from (length buf) upto (1- tag-size) do
+                     (write-byte #x00 out)))
+
+                 ;; else, we have to apply unsync scheme before wrting out to file
+                 (let ((bytes-written (apply-unsync-scheme buf out)))
+                   ;; write out padding, if any
+                   (loop for n from bytes-written  upto (1- tag-size) do
+                     (write-byte #x00 out)))))))
+
+;;; ID3 information is stored as (at position 0 of a file):
+;;; identifier: 3 bytes == "ID3"
+;;; major-version: 1 byte and one of 2, 3, or 4
+;;; revision: 1 byte, usually (always?) == 0
+;;; flags: 1 byte that indicates additional info like compression, etc
+;;; size: a sync-safe, 32-bit integer
+;;; All of this is then followed by the actually frames themselves
+(define-tagged-binary-class generic-id3-tag ()
+  ((identifier     (iso-8859-1 :length 3))
+   (major-version  u1)
+   (revision       u1)
+   (flags          u1)
+   (size           id3-sync-safe-u32))
+                            (:dispatch
+                             (ecase major-version
+                               (2 'id3v2.2-tag)
+                               (3 'id3v2.3-tag)
+                               (4 'id3v2.4-tag))))
+
 ;;; ID3V2.2 header
 (define-binary-class id3v2.2-tag (generic-id3-tag)
   ((frames (id3-frames :tag-size size :flags flags :frame-type 'id3v2.2-frame))))
 
-;;; Extended header flags: V2.3
-(defun ext-header-crc-p      (flags ext-flags)   (and (extended-p flags) (logbitp 15 ext-flags)))
-
 ;;; ID3V2.3 header
 ;;; XXX BUG: extended header must be read AFTER removing the unsync scheme.
-;;;          For now, just don't access these fields?
 (define-binary-class id3v2.3-tag (generic-id3-tag)
   ((extended-header-size (optional :type 'u4 :if (extended-p flags))) ; extended header
    (ext-flags            (optional :type 'u2 :if (extended-p flags))) ; extended header
@@ -1214,97 +1376,6 @@ characters"
    (crc                  (optional :type 'u5 :if (and (extended-p flags) (v2.4-ext-header-crc-p flags ext-flags))))
    (restrictions         (optional :type 'u1 :if (and (extended-p flags) (v2.4-ext-header-restrictions-p flags ext-flags))))
    (frames               (id3-frames :tag-size size :flags flags :frame-type 'id3v2.4-frame))))
-
-;;; ID3 information is stored as (at position 0 of a file):
-;;; identifier: 3 bytes == "ID3"
-;;; major-version: 1 byte and one of 2, 3, or 4
-;;; revision: 1 byte, usually (always?) == 0
-;;; flags: 1 byte that indicates additional info like compression, etc
-;;; size: a sync-safe, 32-bit integer
-;;; All of this is then followed by the actually frames themselves
-(define-tagged-binary-class generic-id3-tag ()
-  ((identifier     (iso-8859-1 :length 3))
-   (major-version  u1)
-   (revision       u1)
-   (flags          u1)
-   (size           id3-sync-safe-u32))
-  (:dispatch
-   (ecase major-version
-     (2 'id3v2.2-tag)
-     (3 'id3v2.3-tag)
-     (4 'id3v2.4-tag))))
-
-;;; Frame flags for v2.3/4
-;;; NB: v2.2 only really defines bit-7. It does document bit-6 as being the
-;;; compression flag, but then states that if it is set, the software should
-;;; "ignore the entire tag if this (bit-6) is set"
-(defun frame-altertag-p   (flags) (logbitp 15 flags))
-(defun frame-alterfile-p  (flags) (logbitp 14 flags))
-(defun frame-readonly-p   (flags) (logbitp 13 flags))
-(defun frame-compressed-p (flags) (logbitp 7 flags))
-(defun frame-encrypted-p  (flags) (logbitp 6 flags))
-(defun frame-grouped-p    (flags) (logbitp 5 flags))
-
-;;; frame flags are different for 2.4.  Also note, that some flags indicate that additional data
-;;; follows the frame header and these must be read in the order of the flags
-(defun v2.4-frame-altertag-p  (flags) (logbitp 14 flags)) ; no additional data
-(defun v2.4-frame-alterfile-p (flags) (logbitp 13 flags)) ; no additional data
-(defun v2.4-frame-readonly-p  (flags) (logbitp 12 flags)) ; no additional data
-(defun v2.4-frame-groupid-p   (flags) (logbitp 6 flags))  ; one byte added to frame
-(defun v2.4-frame-compress-p  (flags) (logbitp 3 flags))  ; one byte added to frame
-(defun v2.4-frame-encrypt-p   (flags) (logbitp 2 flags))  ; one byte added to frame
-(defun v2.4-frame-unsynch-p   (flags) (logbitp 1 flags))  ; no bytes, but should datalen be set
-(defun v2.4-frame-datalen-p   (flags) (logbitp 0 flags))  ; four bytes added to frame
-
-(defmethod frame-header-size ((frame id3v2.2-frame)) 6)
-(defmethod frame-header-size ((frame id3v2.3-frame)) 10)
-(defmethod frame-header-size ((frame id3v2.4-frame)) 10)
-
-(defmethod data-bytes ((frame id3v2.2-frame))
-  (size frame))
-
-(defmethod data-bytes ((frame id3v2.3-frame))
-  (let ((flags (flags frame)))
-    (- (size frame)
-       (if (frame-compressed-p flags) 4 0)
-       (if (frame-encrypted-p flags) 1 0)
-       (if (frame-grouped-p flags) 1 0))))
-
-(defmethod data-bytes ((frame id3v2.4-frame))
-  (let ((flags (flags frame)))
-    (- (size frame)
-       (if (v2.4-frame-groupid-p flags) 1 0)
-       (if (v2.4-frame-compress-p flags) 1 0)
-       (if (v2.4-frame-encrypt-p flags) 1 0)
-       (if (v2.4-frame-datalen-p flags) 4 0))))
-
-
-(define-tagged-binary-class id3v2.2-frame ()
-  ((id   (frame-id :length 3))
-   (size u3))
-  (:dispatch (find-frame-class id 2)))
-
-;;; XXX how to handle compression/encryption???
-(define-tagged-binary-class id3v2.3-frame ()
-  ((id                (frame-id :length 4))
-   (size              u4)
-   (flags             u2)
-   (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
-   (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
-   (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
-  (:dispatch (find-frame-class id 3)))
-
-;;; XXX how to handle compression/encryption/unsync
-(define-tagged-binary-class id3v2.4-frame ()
-  ((id                (frame-id :length 4))
-   (size              id3-sync-safe-u32)
-   (flags             u2)
-   (group-id-byte     (optional :type 'u1 :if (v2.4-frame-groupid-p flags)))
-   (compress-byte     (optional :type 'u1 :if (v2.4-frame-compress-p flags)))
-   (encrypt-byte      (optional :type 'u1 :if (v2.4-frame-encrypt-p flags)))
-   (data-length       (optional :type 'id3-sync-safe-u32 :if (v2.4-frame-datalen-p flags))))
-  (:dispatch (find-frame-class id 4)))
-
 
 ;;; Functions to see if file starts with ID3 or if the old V2.1 tag is at
 ;;; the end of the file.
@@ -1365,7 +1436,7 @@ characters"
             (calc-frame-size frame)) ; make sure we have correct frames sizes
       (incf new-tag-size (+ (size frame) (frame-header-size frame))))
 
-    (debug new-tag-size (size id3))
+    (my-debug new-tag-size (size id3))
 
     (when (> new-tag-size (size id3))
         (error "Need to implement growing tag logic"))
@@ -1384,7 +1455,6 @@ characters"
         (write-value 'id3-v2.1-tag v2.1-tag out)))))
 
 (defun read-dir-id3s (&optional (dir "/home/markv/Music") (func nil))
-  (setf *bad-files* nil)
   (let ((count 0))
     (cl-fad:walk-directory
      dir

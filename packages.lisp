@@ -31,4 +31,5 @@
     #:utils
     #:zlib
     #:com.gigamonkeys.binary-data
-    #:com.gigamonkeys.binary-data.common-datatypes))
+    #:com.gigamonkeys.binary-data.common-datatypes)
+  (:shadow :read-byte :read-sequence))

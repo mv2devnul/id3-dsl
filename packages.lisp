@@ -29,7 +29,7 @@
 (defpackage #:id3-dsl
   (:use #:common-lisp
     #:utils
-    #:zlib
     #:com.gigamonkeys.binary-data
     #:com.gigamonkeys.binary-data.common-datatypes)
-  (:shadow :read-byte :read-sequence))
+  ;;(:shadow :read-byte :read-sequence)
+  )

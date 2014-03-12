@@ -108,7 +108,8 @@ The macro expansion has relatively low overhead in space or time."
   (declare #.utils:*standard-optimize-settings*)
 
   (with-open-file (f file-name :direction :output :if-exists :supersede :element-type '(unsigned-byte 8))
-    (write-sequence data f)))
+    (write-sequence data f)
+    t))
 
 (defmacro redirect (filename &rest body)
   "Temporarily set *STANDARD-OUTPUT* to FILENAME and execute BODY."
@@ -133,7 +134,7 @@ The above will expand to (ash (logand #xFFFBB240 #xFFE00000) -21) at COMPILE tim
 ;;;; Convenience macros
 (defmacro with-gensyms (syms &body body)
   `(let ,(mapcar #'(lambda (s)
-                     `(,s (gensym)))
+                     `(,s (gensym ,(concatenate 'string (symbol-name s) "-"))))
                  syms)
      ,@body))
 

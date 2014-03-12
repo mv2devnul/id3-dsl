@@ -31,5 +31,5 @@
     #:utils
     #:com.gigamonkeys.binary-data
     #:com.gigamonkeys.binary-data.common-datatypes)
-  ;;(:shadow :read-byte :read-sequence)
+  (:shadow #:define-binary-class #:define-tagged-binary-class)
   )

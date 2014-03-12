@@ -1,8 +1,14 @@
 (in-package #:id3-dsl)
 
 (defparameter *dbg* nil)
-(defmacro my-debug (&body body)
-  `(if *dbg* (dbg ,@body)))
+(defun dbg? (val)
+  (if (or (eql *dbg* t)
+          (member val *dbg*))
+      t
+      nil))
+
+(defmacro my-debug (func &body body)
+  `(if (dbg? ,func) (dbg ,func ,@body)))
 
 (defparameter *pedantic* nil "if set, we warn about more things")
 
@@ -28,7 +34,8 @@
 ;;; is supplied in some other way:
 ;;;
 ;;; 0: ISO-8859-1 string -- An "ASCII" string
-;;; 1: UCS-encoded string -- 16-bit code-point, prepended with a byte-order mark (BOM)
+;;; 1: UCS-encoded string -- 16-bit code-point, prepended with a byte-order mark
+;;;    (BOM)
 ;;; 2: UCS, big-endian string -- 16-bit code-point, no BOM
 ;;; 3: UTF-8 encoded string -- variable-byte length encoding
 ;;;
@@ -138,7 +145,7 @@ characters"
          (bom)
          (ns))
 
-    ;(my-debug 'read-id3-string-entry kind length (file-position instream))
+    (my-debug 'read-id3-string 'entry kind length (file-position instream))
 
     (when (eq kind 'ucs-2)
       (if length
@@ -171,17 +178,19 @@ characters"
                      (eq 'ucs-2be kind))
                  (oddp end))
 
-        ;; I have found some MP3's UCS-2 encoded strings that throw in an extra #x0
-        ;; for a non-terminated string, or conversely, only use one #x0 to
-        ;; terminate a UCS-2 string.
+        ;; I have found some MP3's UCS-2 encoded strings that throw in an
+        ;; extra #x0 for a non-terminated string, or conversely, only use
+        ;; one #x0 to terminate a UCS-2 string.
         (when *pedantic*
           (warn-user "File:~a, pos = ~:d~%Odd length for UCS string (~a), terminated = ~a~%"
                      *current-file*
                      (file-position instream)
                      octets
                      term))
-        ;; if terminated, add another #x0 to the end, else drop the extraneous byte.
-        ;; NB: we will fix up the enclosing frame's size on write via CALC-FRAME-SIZE
+
+        ;; if terminated, add another #x0 to the end, else drop the
+        ;; extraneous byte.  NB: we will fix up the enclosing frame's size
+        ;; on write via CALC-FRAME-SIZE
         (if term
             (progn
               (vector-push-extend (1+ end) octets)
@@ -189,20 +198,23 @@ characters"
               (incf end))
             (decf end)))
 
-      ;(my-debug 'read-id3-string-making-ns bom term kind octets)
+      (my-debug 'read-id3-string 'making-ns bom term kind octets)
 
       (setf ns (make-id3-string
                 :bom bom :terminate term :kind kind
-                :string (flex:octets-to-string octets :external-format (make-keyword kind) :end end)))
-      ;(my-debug 'read-id3-string-returning ns (file-position instream))
+                :string (flex:octets-to-string
+                         octets
+                         :external-format (make-keyword kind) :end end)))
+      (my-debug 'read-id3-string 'returning ns (file-position instream))
       ns)))
 
 ;;; And now, the 4 ID3-STRING types
 (define-binary-type iso-8859-1 (length)
   (:reader (instream)
-           (read-id3-string 'iso-8859-1 length instream))
+    (read-id3-string 'iso-8859-1 length instream))
   (:writer (out string)
-    (let ((octets (flex:string-to-octets (id3-string-string string) :external-format :iso-8859-1)))
+    (let ((octets (flex:string-to-octets (id3-string-string string)
+                                         :external-format :iso-8859-1)))
       (write-sequence octets out)
       (if (id3-string-terminate string)
           (write-value 'u1 out 0)))))
@@ -223,25 +235,25 @@ characters"
 
 (define-binary-type ucs-2be (length)
   (:reader (instream)
-           (read-id3-string 'ucs-2be length instream))
+    (read-id3-string 'ucs-2be length instream))
   (:writer (out string)
-           (let ((octets (flex:string-to-octets
-                          (id3-string-string string)
-                          :external-format :ucs-2be)))
-             (write-sequence octets out)
-             (if (id3-string-terminate string)
-                 (write-value 'u2 out 0)))))
+    (let ((octets (flex:string-to-octets
+                   (id3-string-string string)
+                   :external-format :ucs-2be)))
+      (write-sequence octets out)
+      (if (id3-string-terminate string)
+          (write-value 'u2 out 0)))))
 
 (define-binary-type utf-8 (length)
   (:reader (instream)
-           (read-id3-string 'utf-8 length instream))
+    (read-id3-string 'utf-8 length instream))
   (:writer (out string)
-           (let ((octets (flex:string-to-octets
-                          (id3-string-string string)
-                          :external-format :utf-8)))
-             (write-sequence octets out)
-             (if (id3-string-terminate string)
-                 (write-value 'u1 out 0)))))
+    (let ((octets (flex:string-to-octets
+                   (id3-string-string string)
+                   :external-format :utf-8)))
+      (write-sequence octets out)
+      (if (id3-string-terminate string)
+          (write-value 'u1 out 0)))))
 
 ;;; Convert ID3 symbolic encoding from number to symbol
 (defun get-id3-encoding (encoding)
@@ -274,13 +286,10 @@ characters"
 ;;; LENGTH: if set, the length of the non-terminated string
 (define-binary-type id3-encoded-string (encoding length)
   (:reader (in)
-           (multiple-value-bind (type kw len)
-               (string-args encoding length)
-             (read-value type in kw len)))
+    (multiple-value-bind (type kw len) (string-args encoding length)
+      (read-value type in kw len)))
   (:writer (out string)
-           (multiple-value-bind (type kw len)
-               (string-args encoding length)
-             (write-value type out string kw len))))
+    (write-value (slot-value string 'kind) out string)))
 
 ;;; calculate bytes left to read in the tag metadata
 (defun bytes-left (bytes-read)
@@ -297,7 +306,7 @@ characters"
   (let* ((cur-pos (file-position in))
          (frame))
 
-    (my-debug 'read-frame-entry (file-position in))
+    (my-debug 'read-frame 'entry (file-position in))
 
     (handler-case
         (setf frame (read-value frame-type in))
@@ -315,9 +324,10 @@ characters"
               (setf frame (read-value frame-type in))
               (warn-user "Success! (but frame will be treated as read-only)"))
           (condition (c)
-            (error "File: ~a~%Re-reading as raw frame failed:~%~a~%" *current-file* c)))))
+            (error "File: ~a~%Re-reading as raw frame failed:~%~a~%"
+                   *current-file* c)))))
 
-    (my-debug 'read-frame-exit cur-pos frame)
+    (my-debug 'read-frame 'returning cur-pos frame)
 
     frame))
 
@@ -325,30 +335,32 @@ characters"
 ;;; 4 for V2.3/4.
 (define-binary-type frame-id (length)
   (:reader (in)
-           (let ((first-byte (read-byte in)))
-             (when (= first-byte 0)
-               (signal 'in-padding))
-             (let ((ns (make-id3-string
-                        :terminate nil
-                        :kind 'iso-8859-1
-                        :string (concatenate
-                                 'string
-                                 (string (code-char first-byte))
-                                 (id3-string-string (read-value 'iso-8859-1 in :length (1- length)))))))
-               ;(my-debug 'reader-frame-id ns)
-               ns)))
+    (let ((first-byte (read-byte in)))
+      (when (= first-byte 0)
+        (signal 'in-padding))
+      (let ((ns (make-id3-string
+                 :terminate nil
+                 :kind 'iso-8859-1
+                 :string (concatenate
+                          'string
+                          (string (code-char first-byte))
+                          (id3-string-string (read-value 'iso-8859-1 in
+                                                         :length (1- length)))))))
+        (my-debug 'frame-id ns)
+        ns)))
   (:writer (out id)
-           (write-value 'iso-8859-1 out id :length length)))
+    (write-value 'iso-8859-1 out id :length length)))
 
 ;;;  When IF is non-nil, do a READ-VALUE for TYPE
 (define-binary-type optional (type if)
   (:reader (in)
-           (when if (read-value type in)))
+    (when if (read-value type in)))
   (:writer (out value)
-           (when if (write-value type out value))))
+    (when if (write-value type out value))))
 
 ;;; A 32-bit, sync-safe integer. Used for tag/frame sizes
-(define-binary-type id3-sync-safe-u32 () (unsigned-integer :bytes 4 :bits-per-byte 7))
+(define-binary-type id3-sync-safe-u32 ()
+  (unsigned-integer :bytes 4 :bits-per-byte 7))
 
 (defgeneric data-bytes (frame))
 (defgeneric frame-header-size (frame))
@@ -357,9 +369,9 @@ characters"
 ;;; unknown frames, etc.
 (define-binary-type raw-bytes (size)
   (:reader (in)
-   (let ((buf (make-octets size)))
-     (read-sequence buf in)
-     buf))
+    (let ((buf (make-octets size)))
+      (read-sequence buf in)
+      buf))
   (:writer (out buf)
     (write-sequence buf out)))
 
@@ -379,13 +391,55 @@ characters"
 ;;; specialize on for the method, the total FIXED-LEN (non-variable length),
 ;;; and finally the variable-length fields in the frame.
 ;;;
-;;; Also generated is the CALC-FRAME-SIZE method that can be
-;;; used to ensure the frame size corresponds to the actual contents of the frame.
+;;; Also generated is the CALC-FRAME-SIZE method that can be used to ensure
+;;; the frame size corresponds to the actual contents of the frame.
 ;;;
 ;;; Use this macro after every frame class.
 (defgeneric calc-frame-size (frame))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
+
+  ;; Hack time: the gigamonkey's binary-data library is very flexible, but
+  ;; it also has its drawbacks.  Case in point: ID3 compressed frames.
+  ;;
+  ;; The problem here is that binary-data creates a class and read/write
+  ;; methods "under the covers."  This works great until we run into the
+  ;; case of ID3's compressed frames in which we need to switch back and
+  ;; forth from reading/writing uncompressed data (the frame header +
+  ;; extended header) to compressed data (the frame payload).
+  ;;
+  ;; The read case works out somewhat OK: the read methods generated read
+  ;; in the frame header, then call read-value for every mixin class.
+  ;; Writing, on the other hand, is a complete mess, since the write-value
+  ;; method is autogenerated as a sequential set of writes of all the
+  ;; class's slots.
+  ;;
+  ;; The hack for reading is to generate an AROUND method that gets called
+  ;; to read a frame's payload. For writing, we have to be more devious and
+  ;; define some new macros that wrap the binary-data ones.  These new
+  ;; macros capture the slots' specification at definition time, then
+  ;; autogenerate write-values for each slot up until we see ID (which is
+  ;; the frame header).
+  (defmacro define-binary-class (name (&rest superclasses) slots)
+    `(progn
+       (setf (get ',name 'slots-specs) ',slots) ; capture slots' specification
+       (com.gigamonkeys.binary-data:define-binary-class ,name ,superclasses ,slots)))
+
+  (defmacro define-tagged-binary-class (name (&rest superclasses) slots &rest options)
+    `(progn
+       (setf (get ',name 'slots-specs) ',slots) ; capture slots' specification
+       (com.gigamonkeys.binary-data:define-tagged-binary-class ,name ,superclasses ,slots ,@options)))
+
+  (defun direct-slots-specs (name)
+    (copy-list (get name 'slots-specs)))
+
+  (defun inherited-slots-specs (name)
+    (loop for super in (get name 'com.gigamonkeys.binary-data::superclasses)
+          nconc (direct-slots-specs super)
+          nconc (inherited-slots-specs super)))
+
+  (defun all-slots-specs (name)
+    (nconc (direct-slots-specs name) (inherited-slots-specs name)))
 
   (defmacro generate-after-methods (class-name fixed-len &rest slots)
     (let ((methods))
@@ -404,36 +458,109 @@ characters"
       (push 'progn methods)
       methods))
 
-  ;;; XXX need to generate write-objects to do compression (salza2:compress-data current-data 'salza2:zlib-compressor)))
-  (defmacro generate-v2.3-compressed-method (frame-name)
+  (defmacro generate-v2.3-compressed-write-method (frame-name)
+    (with-gensyms (the-data the-compressed-data)
+      `(defmethod com.gigamonkeys.binary-data::write-object :around ((frame ,frame-name) out)
+
+         (with-slots ,(com.gigamonkeys.binary-data::all-slots frame-name) frame
+           (my-debug 'compressed-write ',frame-name (file-position out) flags com.gigamonkeys.binary-data:*in-progress-objects*)
+
+           ;; Don't handle encryption (yet)
+           (assert (not (frame-encrypted-p flags)))
+
+           (if (frame-compressed-p flags)
+               (let* ((,the-data (flex:with-output-to-sequence (v)
+                                   ,@(loop for s in (all-slots-specs frame-name)
+                                          until (eql (first s) 'ID)
+                                          collecting `(progn
+                                                        (my-debug 'compressed-write "writing ~a~%" ',(first s))
+                                                        (write-value ',(if (consp (second s)) (first (second s)) (second s))
+                                                                   v
+                                                                   ,(first s))))))
+                    (,the-compressed-data
+                        (multiple-value-bind (a n) (hu.dwim.util:deflate-sequence ,the-data)
+                          (make-array n :displaced-to a))))
+
+                 (setf size (+ (length ,the-compressed-data) (if (frame-compressed-p flags) 4 0)))
+                 (write-value 'frame-id out id)
+                 (write-value 'u4 out size)
+                 (write-value 'u2 out flags)
+                 (if (frame-compressed-p flags)
+                     (write-value 'u4 out (decompressed-size frame)))
+                 ;; if encrypted/grouped, similarly
+                 (write-sequence ,the-compressed-data out))
+
+           ;; else, not compressed, so just call-next-method
+           (call-next-method))))))
+
+  (defmacro generate-v2.4-compressed-write-method (frame-name)
+    (with-gensyms (the-data the-compressed-data)
+      `(defmethod com.gigamonkeys.binary-data::write-object :around ((frame ,frame-name) out)
+
+         (with-slots ,(com.gigamonkeys.binary-data::all-slots frame-name) frame
+           (my-debug 'compressed-write ',frame-name (file-position out) flags com.gigamonkeys.binary-data:*in-progress-objects*)
+
+           ;; Don't handle encryption (yet)
+           (assert (not (frame-encrypted-p flags)))
+
+           (if (v2.4-frame-compressed-p flags)
+               (let* ((,the-data (flex:with-output-to-sequence (v)
+                                   ,@(loop for s in (all-slots-specs frame-name)
+                                          until (eql (first s) 'ID)
+                                          collecting `(progn
+                                                        (my-debug 'compressed-write "writing ~a~%" ',(first s))
+                                                        (write-value ',(if (consp (second s)) (first (second s)) (second s))
+                                                                   v
+                                                                   ,(first s))))))
+                    (,the-compressed-data
+                        (multiple-value-bind (a n) (hu.dwim.util:deflate-sequence ,the-data)
+                          (make-array n :displaced-to a))))
+
+                 (setf size (+ (length ,the-compressed-data) (if (v2.4-frame-compressed-p flags) 4 0))) ; XXX use datalen instead? what about the 1byte?
+                 (write-value 'frame-id out id)
+                 (write-value 'u4 out size)
+                 (write-value 'u2 out flags)
+                 (if (frame-compressed-p flags)
+                     (write-value 'u4 out (decompressed-size frame)))
+                 ;; if encrypted/grouped, similarly
+                 (write-sequence ,the-compressed-data out))
+
+           ;; else, not compressed, so just call-next-method
+           (call-next-method))))))
+
+  (defmacro generate-v2.3-compressed-read-method (frame-name)
     `(defmethod com.gigamonkeys.binary-data::read-object :around ((frame ,frame-name) in)
        (let ((flags (flags frame)))
+         (my-debug 'compressed-read frame in (file-position in) (frame-compressed-p flags))
 
          ;; Don't handle encryption (yet)
          (assert (not (frame-encrypted-p flags)))
+
          (if (frame-compressed-p flags)
              (let* ((orig-size (size frame))
                     (read-size (- orig-size
                                   (if (decompressed-size frame) 4 0)
                                   (if (grouping-identity frame) 1 0)))
                     (octets (make-octets read-size))
-                    (new-in in))
+                    (new-in))
 
                (read-sequence octets in)
                (setf new-in (flex:make-in-memory-input-stream
                              (chipz:decompress nil 'chipz:zlib octets)))
 
-               ;; a bit of skulduggery here: temporarily set the frame size to the
-               ;; decompressed size.  After reading the compressed data, set it back
-               ;; so that the caller can pick up where it left.
+               ;; a bit of skulduggery here: temporarily set the frame size
+               ;; to the decompressed size.  After reading the compressed
+               ;; data, set it back so that the caller can pick up where it
+               ;; left.
                (setf (size frame) (flex::vector-stream-end new-in))
                (call-next-method frame new-in)
-               (setf (size frame) orig-size))
+               (setf (size frame) orig-size)
+               )
 
              ;; else,  not compressed, so just call the normal method
              (call-next-method)))))
 
-  (defmacro generate-v2.4-compressed-method (frame-name)
+  (defmacro generate-v2.4-compressed-read-method (frame-name)
     `(defmethod com.gigamonkeys.binary-data::read-object :around ((frame ,frame-name) in)
        (let ((flags (flags frame)))
 
@@ -465,28 +592,54 @@ characters"
              (call-next-method)))))
 
   ;; NB: in listing the super classes of a frame class, ORDER IS IMPORTANT!
-  ;; You MUST list the "generic" class first, then the id3v2.x class second.
-  ;; If you don't, then on write, the data in the frame will be written out before
-  ;; the frame header.  This is true on SBCL/ABCL/CCL/CLISP.  I have NOT tested it on
-  ;; other Lisps.
+  ;; You MUST list the "generic" class first, then the id3v2.x class
+  ;; second.  If you don't, then on write, the data in the frame will be
+  ;; written out before the frame header.  This is true on
+  ;; SBCL/ABCL/CCL/CLISP.  I have NOT tested it on other Lisps.
   (defmacro define-binary-v2.2-class (name (&rest superclasses) slots)
     `(define-binary-class ,name ,(append superclasses '(id3v2.2-frame)) ,slots))
 
   (defmacro define-binary-v2.3-class (name (&rest superclasses) slots)
     `(progn
        (define-binary-class ,name ,(append superclasses '(id3v2.3-frame)) ,slots)
-       (generate-v2.3-compressed-method ,name)))
+       (generate-v2.3-compressed-read-method ,name)
+       (generate-v2.3-compressed-write-method ,name)))
 
   (defmacro define-binary-v2.4-class (name (&rest superclasses) slots)
     `(progn
        (define-binary-class ,name ,(append superclasses '(id3v2.4-frame)) ,slots)
-       (generate-v2.4-compressed-method ,name)))
+       (generate-v2.4-compressed-read-method ,name)
+       (generate-v2.4-compressed-write-method ,name)))
   )
 
+(define-tagged-binary-class id3v2.2-frame ()
+  ((id   (frame-id :length 3))
+   (size u3))
+  (:dispatch (find-frame-class id 2 0)))
+
+(define-tagged-binary-class id3v2.3-frame ()
+  ((id                (frame-id :length 4))
+   (size              u4)
+   (flags             u2)
+   (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
+   (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
+   (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
+  (:dispatch (find-frame-class id 3 flags)))
+
+(define-tagged-binary-class id3v2.4-frame ()
+  ((id                (frame-id :length 4))
+   (size              id3-sync-safe-u32)
+   (flags             u2)
+   (group-id-byte     (optional :type 'u1 :if (v2.4-frame-groupid-p flags)))
+   (compress-byte     (optional :type 'u1 :if (v2.4-frame-compressed-p flags))) ; XXX Not sure about this...
+   (encrypt-byte      (optional :type 'u1 :if (v2.4-frame-encrypted-p flags)))
+   (data-length       (optional :type 'id3-sync-safe-u32 :if (v2.4-frame-datalen-p flags))))
+  (:dispatch (find-frame-class id 4 flags)))
+
 ;;; Don't try to grok the frame, just read in its payload.
-(define-binary-class raw-frame ()
+(define-binary-class generic-raw-frame ()
   ((data (raw-bytes :size (data-bytes (current-binary-object))))))
-(generate-after-methods raw-frame 0 data)
+(generate-after-methods generic-raw-frame 0 data)
 
 (define-binary-class generic-comment-frame ()
   ((encoding    u1)
@@ -533,13 +686,6 @@ characters"
    (time-stamp        (raw-bytes :size (bytes-left (+ 1 1))))))
 (generate-after-methods generic-time-stamp-event-frame 2 time-stamp)
 
-;; (define-binary-class generic-mpeg-lookup-table-frame () ; XXX WRONG
-;;   ((frames-between-reference u2)
-;;    (bytes-between-reference  u3)
-;;    (bits-for-bytes-deviation u1)
-;;    (bits-for-ms-deviation    u1)))
-
-
 (define-binary-class generic-synced-tempo-code-frame ()
   ((time-stamp-format u1)
    (tempo-data        (raw-bytes :size (bytes-left 1)))))
@@ -554,7 +700,7 @@ characters"
                        :length (bytes-left (+ 1
                                               3
                                               (encoded-string-length content-descriptor)))))))
-(generate-after-methods generic-unsynced-lyrics-frame 4 content-description lyrics)
+(generate-after-methods generic-unsynced-lyrics-frame 4 content-descriptor lyrics)
 
 (define-binary-class generic-synced-lyrics-frame ()
   ((encoding           u1)
@@ -610,9 +756,9 @@ characters"
    (genre   u1)))
 
 ;;;; "RAW" frames: just slurp in the frame contents as octets
-(define-binary-v2.2-class raw-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class raw-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class raw-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class raw-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class raw-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class raw-frame-v2.4 (generic-raw-frame) ())
 
 ;;;; Concrete frames, listed by the number found in the ID3 "specs".
 ;;; The numbers below (e.g. 4.1) come from V2.2/2.3 of the "specs".  V2.4
@@ -794,9 +940,9 @@ characters"
 (define-binary-v2.3-class ipls-frame-v2.3 (generic-desc-value-frame) ()) ; v2.3 only
 
 ;;; 4.5
-(define-binary-v2.2-class mci-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class mcdi-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class mcdi-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class mci-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class mcdi-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class mcdi-frame-v2.4 (generic-raw-frame) ())
 
 ;;; 4.6
 (define-binary-v2.2-class etc-frame-v2.2 (generic-time-stamp-event-frame) ())
@@ -804,9 +950,9 @@ characters"
 (define-binary-v2.4-class etco-frame-v2.4 (generic-time-stamp-event-frame) ())
 
 ;;; 4.7
-(define-binary-v2.2-class mll-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class mllt-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class mllt-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class mll-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class mllt-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class mllt-frame-v2.4 (generic-raw-frame) ())
 
 ;;; 4.8
 (define-binary-v2.2-class stc-frame-v2.2 (generic-synced-tempo-code-frame) ())
@@ -829,17 +975,17 @@ characters"
 (define-binary-v2.4-class comm-frame-v2.4 (generic-comment-frame) ())
 
 ;;; 4.12
-(define-binary-v2.2-class rva-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class rvad-frame-v2.3 (raw-frame) ()) ; v2.3 only
+(define-binary-v2.2-class rva-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class rvad-frame-v2.3 (generic-raw-frame) ()) ; v2.3 only
 
 ;;; 4.13
-(define-binary-v2.2-class equ-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class equa-frame-v2.3 (raw-frame) ()) ; v2.3 only
+(define-binary-v2.2-class equ-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class equa-frame-v2.3 (generic-raw-frame) ()) ; v2.3 only
 
 ;;; 4.14
-(define-binary-v2.2-class rev-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class rvrb-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class rvrb-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class rev-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class rvrb-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class rvrb-frame-v2.4 (generic-raw-frame) ())
 
 ;;; 4.15
 (define-binary-v2.2-class pic-frame-v2.2 ()
@@ -873,7 +1019,7 @@ characters"
 (define-binary-v2.2-class geo-frame-v2.2 ()
   ((encoding            u1)
    (mime-type           (iso-8859-1))
-   (filename            (iso-8859-1))             ; NB: 2.2 spec says this is ISO...
+   (filename            (iso-8859-1))  ; NB: 2.2 spec says this is ISO...
    (content-description (id3-encoded-string :encoding encoding))
    (encapsulated-object (raw-bytes
                          :size (bytes-left (+ 1
@@ -898,9 +1044,9 @@ characters"
 (define-binary-v2.4-class geob-frame-v2.4 (generic-geob-frame) ())
 
 ;;; 4.17
-(define-binary-v2.2-class cnt-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class pcnt-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class pcnt-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class cnt-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class pcnt-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class pcnt-frame-v2.4 (generic-raw-frame) ())
 
 ;;; 4.18
 (define-binary-v2.2-class pop-frame-v2.2 (generic-pop-frame) ())
@@ -913,12 +1059,12 @@ characters"
 (define-binary-v2.4-class rbuf-frame-v2.4 (generic-buf-frame) ())
 
 ;;; 4.20
-(define-binary-v2.2-class crm-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class aenc-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class aenc-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class crm-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class aenc-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class aenc-frame-v2.4 (generic-raw-frame) ())
 
 ;;; 4.21 NB v2.2/v2.3 diverge here
-(define-binary-v2.2-class cra-frame-v2.2 (raw-frame) ())
+(define-binary-v2.2-class cra-frame-v2.2 (generic-raw-frame) ())
 
 ;;; 4.22
 (define-binary-v2.2-class lnk-frame-v2.2 (generic-link-frame) ())
@@ -997,11 +1143,11 @@ characters"
 (define-binary-v2.4-class priv-frame-v2.4 (generic-ufid-frame) ())
 
 ;;; V2.4 frames
-(define-binary-v2.4-class aspi-frame-v2.4 (raw-frame) ()) ; v2.4 only
-(define-binary-v2.4-class equ2-frame-v2.4 (raw-frame) ()) ; v2.4 only
-(define-binary-v2.4-class rva2-frame-v2.4 (raw-frame) ()) ; v2.4 only
-(define-binary-v2.4-class seek-frame-v2.4 (raw-frame) ()) ; v2.4 only
-(define-binary-v2.4-class sign-frame-v2.4 (raw-frame) ()) ; v2.4 only
+(define-binary-v2.4-class aspi-frame-v2.4 (generic-raw-frame) ()) ; v2.4 only
+(define-binary-v2.4-class equ2-frame-v2.4 (generic-raw-frame) ()) ; v2.4 only
+(define-binary-v2.4-class rva2-frame-v2.4 (generic-raw-frame) ()) ; v2.4 only
+(define-binary-v2.4-class seek-frame-v2.4 (generic-raw-frame) ()) ; v2.4 only
+(define-binary-v2.4-class sign-frame-v2.4 (generic-raw-frame) ()) ; v2.4 only
 
 ;;;; Non-standard frames
 
@@ -1019,9 +1165,9 @@ characters"
 ;;;      (payload  u1)))
 ;;; On the other hand, I've seen it defined other ways too, so
 ;;; for now, just slurp it in raw.
-(define-binary-v2.2-class tcp-frame-v2.2 (raw-frame) ())
-(define-binary-v2.3-class tcmp-frame-v2.3 (raw-frame) ())
-(define-binary-v2.4-class tcmp-frame-v2.4 (raw-frame) ())
+(define-binary-v2.2-class tcp-frame-v2.2 (generic-raw-frame) ())
+(define-binary-v2.3-class tcmp-frame-v2.3 (generic-raw-frame) ())
+(define-binary-v2.4-class tcmp-frame-v2.4 (generic-raw-frame) ())
 
 
 ;;; Apple's sort "enhancements" for v2.2/v2.3
@@ -1056,10 +1202,10 @@ characters"
 (define-binary-v2.4-class rgad-frame-v2.4 (generic-rgad-frame) ())
 
 ;;; Non-standard, Music Match fluff. V2.3 only???
-(define-binary-v2.3-class ncon-frame-v2.3 (raw-frame) ())
+(define-binary-v2.3-class ncon-frame-v2.3 (generic-raw-frame) ())
 (define-binary-v2.3-class xdor-frame-v2.3 (generic-text-info-frame) ())
 
-;;; Frame flags for v2.3/4
+;;; Frame flags for v2.3
 ;;; NB: v2.2 only really defines bit-7. It does document bit-6 as being the
 ;;; compression flag, but then states that if it is set, the software should
 ;;; "ignore the entire tag if this (bit-6) is set"
@@ -1070,62 +1216,52 @@ characters"
 (defun frame-encrypted-p  (flags) (logbitp 6 flags))
 (defun frame-grouped-p    (flags) (logbitp 5 flags))
 
-;;; frame flags are different for 2.4.  Also note, that some flags indicate that additional data
-;;; follows the frame header and these must be read in the order of the flags
+;;; frame flags are different for 2.4.  Also note, that some flags indicate
+;;; that additional data follows the frame header and these must be read in
+;;; the order of the flags
 (defun v2.4-frame-altertag-p   (flags) (logbitp 14 flags)) ; no additional data
 (defun v2.4-frame-alterfile-p  (flags) (logbitp 13 flags)) ; no additional data
 (defun v2.4-frame-readonly-p   (flags) (logbitp 12 flags)) ; no additional data
 (defun v2.4-frame-groupid-p    (flags) (logbitp 6 flags))  ; one byte added to frame
 (defun v2.4-frame-compressed-p (flags) (logbitp 3 flags))  ; one byte added to frame
 (defun v2.4-frame-encrypted-p  (flags) (logbitp 2 flags))  ; one byte added to frame
-(defun v2.4-frame-unsync-p     (flags) (logbitp 1 flags))  ; no bytes, but should datalen be set
+(defun v2.4-frame-unsync-p     (flags) (logbitp 1 flags))  ; no bytes, but datalen should be set?
 (defun v2.4-frame-datalen-p    (flags) (logbitp 0 flags))  ; four bytes added to frame
 
+;;; These frames are used whenever we need to skip over a frame due to
+;;; deocoding problems.  Only the ID and size are groked.  These classes
+;;; are defined due to the way frame reading works in the gigamonkeys'
+;;; library.  In that lib, a frame read first reads in the frame header,
+;;; then calls read-object for the rest of the data; however, we use these
+;;; classes as a "restart" of sorts, that is, they are only used when we
+;;; try to read a class, but fail, so we need to rewind the file position
+;;; and read in an entire frame.
 (define-binary-class id3v2.2-skipped-frame ()
   ((id   (frame-id :length 3))
    (size u3)
    (data (raw-bytes :size size))))
+(generate-after-methods id3v2.2-skipped-frame 6 data)
 
 (define-binary-class id3v2.3-skipped-frame ()
-  ((id   (frame-id :length 4))
-   (size  u4)
-   (flags u2)
-   (data  (raw-bytes :size size))))
+  ((id                (frame-id :length 4))
+   (size              u4)
+   (flags             u2)
+   (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
+   (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
+   (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags)))
+   (data              (raw-bytes :size (data-bytes (current-binary-object))))))
+(generate-after-methods id3v2.3-skipped-frame 0 data)
 
 (define-binary-class id3v2.4-skipped-frame ()
   ((id    (frame-id :length 4))
    (size  u4)
    (flags u2)
    (data  (raw-bytes :size size))))
+(generate-after-methods id3v2.4-skipped-frame 10 data)
 
 (defmethod frame-header-size ((frame id3v2.2-skipped-frame)) 6)
 (defmethod frame-header-size ((frame id3v2.3-skipped-frame)) 10)
 (defmethod frame-header-size ((frame id3v2.4-skipped-frame)) 10)
-
-(define-tagged-binary-class id3v2.2-frame ()
-  ((id   (frame-id :length 3))
-   (size u3))
-  (:dispatch (find-frame-class id 2 0)))
-
-;;; XXX how to handle compression/encryption???
-(define-tagged-binary-class id3v2.3-frame ()
-  ((id                (frame-id :length 4))
-   (size              u4)
-   (flags             u2)
-   (decompressed-size (optional :type 'u4 :if (frame-compressed-p flags)))
-   (encryption-scheme (optional :type 'u1 :if (frame-encrypted-p flags)))
-   (grouping-identity (optional :type 'u1 :if (frame-grouped-p flags))))
-  (:dispatch (find-frame-class id 3 flags)))
-
-(define-tagged-binary-class id3v2.4-frame ()
-  ((id                (frame-id :length 4))
-   (size              id3-sync-safe-u32)
-   (flags             u2)
-   (group-id-byte     (optional :type 'u1 :if (v2.4-frame-groupid-p flags)))
-   (compress-byte     (optional :type 'u1 :if (v2.4-frame-compressed-p flags))) ; XXX Not sure about this...
-   (encrypt-byte      (optional :type 'u1 :if (v2.4-frame-encrypted-p flags)))
-   (data-length       (optional :type 'id3-sync-safe-u32 :if (v2.4-frame-datalen-p flags))))
-  (:dispatch (find-frame-class id 4 flags)))
 
 (defmethod frame-header-size ((frame id3v2.2-frame)) 6)
 (defmethod frame-header-size ((frame id3v2.3-frame)) 10)
@@ -1135,6 +1271,13 @@ characters"
   (size frame))
 
 (defmethod data-bytes ((frame id3v2.3-frame))
+  (let ((flags (flags frame)))
+    (- (size frame)
+       (if (frame-compressed-p flags) 4 0)
+       (if (frame-encrypted-p flags) 1 0)
+       (if (frame-grouped-p flags) 1 0))))
+
+(defmethod data-bytes ((frame id3v2.3-skipped-frame))
   (let ((flags (flags frame)))
     (- (size frame)
        (if (frame-compressed-p flags) 4 0)
@@ -1232,7 +1375,7 @@ characters"
     ;; if we found the class name, return the class (to be used for
     ;; MAKE-INSTANCE)
     (awhen (defined-frame-class? name version)
-      (my-debug 'find-frame-class-found-defined-frame name version)
+      (my-debug 'find-frame-class 'found-defined-frame name version)
       (return-from find-frame-class it))
 
     ;; if not a pre-defined frame, look at general cases of starting with a
@@ -1241,7 +1384,7 @@ characters"
     (if (not (valid-frame-name name))
         (setf name (get-user-correction name version)))
 
-    (my-debug 'find-frame-class-looking-for name)
+    (my-debug 'find-frame-class 'looking-for name)
 
     (setf found-class
           (case (aref name 0)
@@ -1272,7 +1415,7 @@ characters"
                (2 'raw-frame-v2.2)
                (3 'raw-frame-v2.3)
                (4 'raw-frame-v2.4)))))
-    (my-debug 'find-frame-class-found-class found-class)
+    (my-debug 'find-frame-class 'found-class found-class)
     found-class))
 
 
@@ -1322,14 +1465,16 @@ characters"
 (defun header-footer-p       (flags)             (logbitp 4 flags)) ; v2.4 only
 
 ;;; Extended header flags: V2.3
-(defun ext-header-crc-p      (flags ext-flags)   (and (extended-p flags) (logbitp 15 ext-flags)))
+(defun ext-header-crc-p      (flags ext-flags)   (and (extended-p flags)
+                                                      (logbitp 15 ext-flags)))
 
 
 ;;; ID3 frames
 ;;; XXX Probably should move the reading in of extended tag header here???
 (define-binary-type id3-frames (tag-size flags frame-type)
   (:reader (in)
-    (my-debug 'id3-frames-reader-entry (file-position in) tag-size flags frame-type)
+    (my-debug 'id3-frames-reader 'entry (file-position in)
+      tag-size flags frame-type)
 
     (let ((octets)
           (in-stream)
@@ -1348,20 +1493,23 @@ characters"
           ;; else, read and remove unsync
           (setf octets (remove-unsync-scheme in tag-size)))
 
-      ;; create a FLEX in-memory stream of the frame area and read frames from that.
-      ;; this handles the unsync cleanly, plus makes is impossible to have "run-away"
-      ;; read from badly formed ID3 tags.
+      ;; create a FLEX in-memory stream of the frame area and read frames
+      ;; from that.  this handles the unsync cleanly, plus makes is
+      ;; impossible to have "run-away" read from badly formed ID3 tags.
       (setf in-stream (flex:make-in-memory-input-stream octets)
             size (length octets))
 
-      (my-debug 'id3-frames-reader-before-loop size)
+      (my-debug 'id3-frames-reader 'before-loop size)
 
       (loop with to-read = size
             while (plusp to-read)
             for frame = (read-frame frame-type in-stream)
             while frame do
               (decf to-read (+ (frame-header-size frame) (size frame)))
-              (my-debug 'id3-frames-reader-in-loop frame to-read (flex::vector-stream-index in-stream) (flex::vector-stream-end in-stream))
+              (my-debug 'id3-frames-reader
+                'in-loop frame to-read
+                (flex::vector-stream-index in-stream)
+                (flex::vector-stream-end in-stream))
             collect frame
             finally (loop repeat (1- to-read) do (read-byte in-stream)))))
 
@@ -1370,6 +1518,7 @@ characters"
     (let ((buf (flex:with-output-to-sequence (tmp)
                  (loop with to-write = tag-size
                        for frame in frames do
+                         (my-debug 'frame-writer to-write (type-of frame) frame-type frame)
                          (write-value frame-type tmp frame)
                          (decf to-write (+ (frame-header-size frame) (size frame)))))))
 
@@ -1383,7 +1532,7 @@ characters"
           ;; else, we have to apply unsync scheme before wrting out to file
           (let ((bytes-written (apply-unsync-scheme buf out)))
             ;; write out padding, if any
-            (loop for n from bytes-written  upto (1- tag-size) do
+            (loop for n from bytes-written upto (1- tag-size) do
               (write-byte #x00 out)))))))
 
 ;;; ID3 information is stored as (at position 0 of a file):
@@ -1465,21 +1614,31 @@ characters"
 (defun read-id3 (file)
   (let ((*current-file* file)
         (tag-v2.2+)
-        (tag-v2.1))
+        (tag-v2.1)
+        (file-size))
 
     (multiple-value-bind (has-id3v2.2+ has-id3v2.1) (id3-p file)
       (when (or has-id3v2.2+ has-id3v2.1)
         (with-open-file (in file :element-type 'octet)
+          (setf file-size (file-length in))
           (when has-id3v2.2+
             (setf tag-v2.2+ (read-value 'generic-id3-tag in)))
           (when has-id3v2.1
-            (let ((len (file-length in))
-                  (tst))
-              (when (> len 128)
-                (file-position in (- len 128))
+            (let ((tst))
+              (when (> file-size 128)
+                (file-position in (- file-size 128))
                 (setf tst (read-value 'id3-v2.1-tag in))
                 (if (str= (tag tst) "TAG")
                     (setf tag-v2.1 tst))))))))
+
+    ;; this should never happen in real life, but at least one of taglib's
+    ;; test cases (compressed_id3_frame.mp3) has this bug.
+    (when (and tag-v2.2+
+               (> (size tag-v2.2+) file-size))
+          (warn-user "Warning: ID3 tag header size is larger than file size (tag-size: ~:d, file size: ~:d)~%Ammending tag size to ~:d"
+                     (size tag-v2.2+) file-size (- file-size 10))
+          (setf (size tag-v2.2+) (- file-size 10))) ; 10 is size of the tag header
+
     (values tag-v2.2+ tag-v2.1)))
 
 ;;; Write out newer (v2.[234]) tag and v2.1 tag
@@ -1487,21 +1646,26 @@ characters"
 ;;; the each frame's size on write (see READ-ID3-STRING)
 (defun write-id3 (file id3 &optional v2.1-tag)
   (let ((new-tag-size 10)) ; the ID3 tag header size
+
+    ;; XXX this is broken for compressed frames due to calc-frame-size
+    ;; using get-length on a slot to get it's size.
     (loop for frame in (frames id3) do
       (setf (size frame)
             (calc-frame-size frame)) ; make sure we have correct frames sizes
       (incf new-tag-size (+ (size frame) (frame-header-size frame))))
 
-    (my-debug new-tag-size (size id3))
+    (my-debug 'write-id3 new-tag-size (size id3))
 
     (when (> new-tag-size (size id3))
-        (error "Need to implement growing tag logic"))
+      (warn-user "Need to implement growing tag logic~%New tag size: ~:d, old tag size: ~:d"
+                 new-tag-size (size id3)))
 
     (with-open-file (out file :element-type 'octet :direction :io
                               :if-does-not-exist :create :if-exists :overwrite)
 
       ;; for now, just handling files that have ID3s already
       (assert (has-id3v2.2+ out))
+
       (write-value (type-of id3) out id3)
 
       (when v2.1-tag
@@ -1528,10 +1692,12 @@ characters"
 
 (defparameter *lots* "/home/markv//Music/Boston/Third Stage/08 I Think I Like It_Can'tcha Say.mp3")
 
-(defun ls-frames (id3-tag)
+(defun ls-frames (id3-tag &optional func)
   (let ((count 0))
     (dolist (f (frames id3-tag))
-      (format t "~3d: ~a~%" count f)
+      (if func
+          (funcall func f)
+          (format t "~3d: ~a~%" count f))
       (incf count))))
 
 (defun remove-frames (id3 &rest frame-types)
@@ -1593,8 +1759,17 @@ characters"
 
 ;;; for debugging
 (defun hex (n)
-  (format t "~d/~x~%" n n)
+  (format t "decimal: ~:d, hex: ~x, sync-safe: ~:d~%" n n (as-sync-safe n))
+  (format t "bits set:~%")
   (loop for i from 0 to 31 do (if (logbitp i n) (format t "  Bit ~d set~%" i))))
+
+(defun as-sync-safe (n)
+  (let ((ret 0))
+    (setf (ldb (byte 7 0) ret)  (ldb (byte 8 0) n))
+    (setf (ldb (byte 7 7) ret)  (ldb (byte 8 8) n))
+    (setf (ldb (byte 7 15) ret) (ldb (byte 8 16) n))
+    (setf (ldb (byte 7 23) ret) (ldb (byte 8 24) n))
+    ret))
 
 
 ;; (defun generate-all-2.3-compressed-methods ()
@@ -1604,3 +1779,7 @@ characters"
 ;;         (
 
 ;; (ccl:advise read-frame (progn (format t "~:d~%" (file-position (second ccl:arglist)))) :when :before :name :foo)
+
+;; (defmacro define-generic-class (name slots fixed-length &rest variable-length-slots)
+;;   `(progn (define-binary-class ,name ,slots)
+;;           (generate-after-methods ,name ,fixed-length ,@variable-length-slots)))

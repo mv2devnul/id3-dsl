@@ -312,7 +312,7 @@ characters"
         (setf frame (read-value frame-type in))
       (in-padding () nil)
       (condition (c)
-        (warn-user "File: ~a, pos = ~:d~%While trying to read a frame, got condition:~%~a~%~%Retrying to re-read it as a raw-frame"
+        (warn-user "File: ~a, pos = ~:d~%While trying to read a frame, got condition:~%~a~%Trying to re-read it as a raw-frame~%"
                    *current-file* cur-pos c)
         (setf frame-type (ecase frame-type
                            (id3v2.2-frame 'id3v2.2-skiped-frame)
